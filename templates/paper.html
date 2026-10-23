@@ -2,10 +2,6 @@
 {% block title %}{{ paper.title }}{% endblock %}
 {% block page %}paper{% endblock %}
 {% block body_attrs %} data-arxiv-id="{{ arxiv_id }}"{% endblock %}
-{% block head %}
-{# 답변에만 필요: media=print로 받아 두고 onload에 적용 → CDN이 느려도 본문 페인트·스크립트를 막지 않음 #}
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous" media="print" onload="this.media='all'">
-{% endblock %}
 {% block body %}
 <script>
   const ARXIV_ID = {{ arxiv_id | tojson }};
@@ -18,16 +14,23 @@
   <span id="bar-actions"></span>
   <button type="button" id="bar-more" class="pr-bar-btn" aria-label="더보기" hidden>⋯</button>
 </header>
-<div id="status-strip" class="pr-ui" role="status" hidden></div>
+{# 헤더 아래 띠: PaperUI.topSlot(id)의 자리들 (상태 칩 줄이 'app:status' 40) #}
+<div id="top-stack" class="pr-ui">
+  <div id="status-strip" class="pr-slot" data-slot="app:status" data-order="40" role="status" hidden></div>
+</div>
 <main id="paper" class="paper" lang="en">{{ paper.html | safe }}</main>
 
-<div id="fab-stack" class="pr-ui"></div>
-<button type="button" id="back-chip" class="pr-ui" hidden>↩ 돌아가기</button>
-<div id="sel-bar" class="pr-ui" role="toolbar" aria-label="선택한 부분 도구" hidden></div>
-<div id="sheet-pill" class="pr-ui" hidden>
-  <button type="button" id="pill-open">답변 보기</button>
-  <button type="button" id="pill-x" aria-label="대화 닫기">✕</button>
+{# 아래쪽 줄: 돌아가기 · 답변 보기 · FAB (겹치지 않게 한 flex 줄), 그 위에 PaperUI.bottomSlot(id) 줄 #}
+<div id="bottom-dock" class="pr-ui">
+  <button type="button" id="back-chip" hidden>↩ 돌아가기</button>
+  <div id="sheet-pill" hidden>
+    <button type="button" id="pill-open">답변 보기</button>
+    <button type="button" id="pill-x" aria-label="대화 닫기">✕</button>
+  </div>
+  <div id="fab-stack"></div>
+  <div id="bottom-slots"></div>
 </div>
+<div id="sel-bar" class="pr-ui" role="toolbar" aria-label="선택한 부분 도구" hidden></div>
 
 <section id="sheet" class="sheet pr-ui" role="dialog" aria-modal="false" aria-labelledby="sheet-title" tabindex="-1" hidden>
   <div class="sheet-grab" aria-hidden="true"><div class="pr-handle"></div></div>
@@ -48,10 +51,4 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ asset('voice.js') }}"></script>
-{% endblock %}
-{% block late_scripts %}
-<script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" crossorigin="anonymous"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" crossorigin="anonymous"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
 {% endblock %}

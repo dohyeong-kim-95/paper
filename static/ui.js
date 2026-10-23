@@ -24,6 +24,9 @@
     "app:selbar": { order: 900 },
   };
   const MAX_PRIMARY = 3;
+  // 헤더 아래 띠(#top-stack)·아래쪽 줄 위(#bottom-slots) 자리 순서 (docs/FEATURES.md §5.11)
+  const TOP = { "toc-progress": 10, "in-paper-search": 20, "offline-save": 30, "app:status": 40, "glossary": 50 };
+  const BOTTOM = { "audio-summary": 10 };
 
   // 순수 함수: 버튼 목록 → {primary, overflow}
   function barLayout(buttons, table = BAR, max = MAX_PRIMARY) {
@@ -42,7 +45,7 @@
     return list;
   }
 
-  const api = { BAR, barLayout, upsert };
+  const api = { BAR, TOP, BOTTOM, barLayout, upsert };
   if (typeof module !== "undefined") module.exports = api;
   if (typeof document === "undefined") return;
 
@@ -65,22 +68,34 @@
 
   // ---------- 레이어: 시트·peek·뷰어·점프를 시스템 뒤로가기(안드로이드 back, iOS 스와이프)로 닫기 ----------
   // 레이어가 하나라도 열려 있으면 history에 표지 항목({prLayer:1}) 하나를 둠. 뒤로가기 → 맨 위 레이어 하나 닫고 필요하면 다시 push.
+  // 표지 바로 아래 항목에는 이 페이지 로드의 표시(prBase)를 붙여 둠: popstate로 그 항목에 도착했을 때만 레이어 Back.
+  // 해시 이동(#bib.bib1 링크, location.hash)이 만든 항목·그 되돌리기는 레이어를 닫지 않음.
   // 스크롤 복원 모드는 history 항목마다 따로: 레이어를 연 시점의 항목만 manual (뒤로가기로 돌아올 때 브라우저가
   // 그 시점 위치로 튀지 않게), 표지 항목은 auto (새로고침·탭 폐기·다른 페이지에서 돌아올 때 읽던 위치 복원)
   const layers = [];
   let sentinel = false, backPending = 0;
+  const BASE = Math.random().toString(36).slice(2);
   const scrollMode = m => { try { history.scrollRestoration = m; } catch { /* 무시 */ } };
+  const stateObj = () => (history.state && typeof history.state === "object" ? history.state : {});
+  const atBase = () => stateObj().prBase === BASE;
   function pushSentinel() {
     if (sentinel || backPending || !layers.length) return;
     scrollMode("manual");
-    try { history.pushState({ prLayer: 1 }, ""); sentinel = true; } catch { /* 무시 */ }
+    try {
+      if (!atBase()) history.replaceState({ ...stateObj(), prBase: BASE }, "");
+      history.pushState({ prLayer: 1 }, "");
+      sentinel = true;
+    } catch { /* 무시 */ }
     scrollMode("auto");
   }
   // 새로고침 등으로 표지 항목에서 페이지가 다시 열림(레이어 없음): 보통 항목으로 (레이어를 열면 표지를 새로 쌓음)
   try { if (history.state && history.state.prLayer) history.replaceState(null, ""); } catch { /* 무시 */ }
   const settle = () => { pushSentinel(); if (!layers.length && !backPending) scrollMode("auto"); };
+  // z: 이 레이어 화면의 z-index (peek가 그 위에 쌓이도록). viewer는 기본 30
+  const KIND_Z = { viewer: 30, sheet: 20 };
   function layer(onClose, opts = {}) {
-    const l = { onClose, kind: opts.kind || "layer", keepOnSheet: !!opts.keepOnSheet, open: true };
+    const kind = opts.kind || "layer";
+    const l = { onClose, kind, keepOnSheet: !!opts.keepOnSheet, open: true, z: opts.z ?? KIND_Z[kind] ?? null };
     layers.push(l);
     pushSentinel();
     const close = (reason = "close") => {
@@ -94,7 +109,14 @@
     return close;
   }
   window.addEventListener("popstate", () => {
-    if (backPending) { backPending--; settle(); return; }
+    if (backPending) {
+      // 우리가 부른 history.back(): 해시 이동 항목 위에서 출발했으면 아직 표지 위 → 바탕 항목까지 더 뒤로
+      if (!atBase() && stateObj().prLayer && !layers.length) { history.back(); return; }
+      backPending--;
+      settle();
+      return;
+    }
+    if (!atBase()) return; // 해시 이동이나 그 되돌리기 (표지를 떠난 것이 아님)
     sentinel = false;
     const top = layers[layers.length - 1];
     if (top) {
@@ -111,6 +133,18 @@
   }
   document.addEventListener("keydown", e => {
     if (e.key === "Escape" && topLayer()) { e.preventDefault(); topLayer().close("escape"); }
+  });
+  // 레이어가 열려 있을 때 같은 문서 해시 링크(#S2, #bib.bib1 …)는 기본 이동(history 항목 추가) 대신 PaperNav.jumpTo.
+  // window 버블 단계라 본문 탭 처리기·기능 리스너가 먼저 (그들이 preventDefault 하면 건드리지 않음)
+  window.addEventListener("click", e => {
+    if (e.defaultPrevented || e.button || !layers.length || !(e.target instanceof Element)) return;
+    const a = e.target.closest('a[href^="#"]');
+    let id = a ? a.getAttribute("href").slice(1) : "";
+    try { id = decodeURIComponent(id); } catch { /* 그대로 */ }
+    const target = id && document.getElementById(id);
+    if (!target || !window.PaperNav) return;
+    e.preventDefault();
+    PaperNav.jumpTo(target);
   });
 
   // 아래로 끌어 닫기 (handle을 잡고 target을 움직임). onDone(dy) → true면 닫힘 처리됨
@@ -165,16 +199,17 @@
       box.append(h("div", { class: "pr-peek-actions" }, actions.map(a =>
         h("button", { class: a.primary ? "primary" : "", text: a.label, onclick: () => a.onClick && a.onClick({ close }) }))));
     }
-    const depth = layers.filter(l => l.kind === "peek").length;
-    backdrop.style.zIndex = 25 + depth * 2;
-    box.style.zIndex = 26 + depth * 2;
+    // 열린 레이어(뷰어 z 30, 다른 peek 등) 중 가장 높은 것 위로: 첫 peek 25/26, 겹치면 +2씩
+    const topZ = Math.max(24, ...layers.filter(l => l.open && l.z != null).map(l => l.z));
+    backdrop.style.zIndex = topZ + 1;
+    box.style.zIndex = topZ + 2;
     document.body.append(backdrop, box);
     const close = layer(reason => {
       backdrop.remove();
       box.remove();
       restore();
       onClose && onClose(reason);
-    }, { kind: "peek" });
+    }, { kind: "peek", z: topZ + 2 });
     backdrop.addEventListener("click", () => close("outside"));
     closeBtn.addEventListener("click", () => close("close"));
     dragDown(head, box, close);
@@ -289,6 +324,45 @@
     return sec;
   }
 
+  // ---------- 화면 위·아래 공용 자리 (docs/FEATURES.md §5.11) ----------
+  // 헤더 아래 띠 #top-stack: 진행 막대·찾기 줄·오프라인 배너·상태 칩(#status-strip)·뜻 칩이 정해진 순서로 쌓임 (sticky)
+  // 아래쪽 #bottom-slots: ↩ 돌아가기·답변 보기·FAB 줄 바로 위의 전체 너비 줄 (오디오 재생기 등)
+  function slotIn(rootId, table, id, order) {
+    const root = $(rootId);
+    if (!root || !id) return null;
+    let el = root.querySelector(`:scope > [data-slot="${CSS.escape(id)}"]`);
+    if (el) return el;
+    const ord = table[id] ?? order ?? 500;
+    el = h("div", { class: "pr-slot", dataset: { slot: id, order: ord } });
+    root.insertBefore(el, [...root.children].find(c => Number(c.dataset.order) > ord) || null);
+    return el;
+  }
+  const topSlot = (id, order) => slotIn("top-stack", TOP, id, order);
+  const bottomSlot = (id, order) => slotIn("bottom-slots", BOTTOM, id, order);
+
+  // --bar-h (헤더 높이, safe area 포함), --top-stack-h (띠 높이)를 :root에. --top-h = 둘의 합 (헤더가 숨으면 띠만)
+  function measureTop() {
+    const st = document.documentElement.style, bar = $("bar"), ts = $("top-stack");
+    if (bar) st.setProperty("--bar-h", `${bar.offsetHeight}px`);
+    if (ts) st.setProperty("--top-stack-h", `${ts.offsetHeight}px`);
+  }
+  if ($("bar") || $("top-stack")) {
+    measureTop();
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(measureTop);
+      for (const el of [$("bar"), $("top-stack")]) if (el) ro.observe(el);
+    }
+  }
+  // 헤더 자동 숨김 상태 (reading-settings만 부름): html.pr-bar-hidden → 헤더는 위로, 띠는 화면 맨 위로. 'paper:bar' {hidden}
+  function setBarHidden(on) {
+    const d = document.documentElement;
+    on = !!on;
+    if (d.classList.contains("pr-bar-hidden") === on) return;
+    d.classList.toggle("pr-bar-hidden", on);
+    document.dispatchEvent(new CustomEvent("paper:bar", { detail: { hidden: on } }));
+  }
+  const isBarHidden = () => document.documentElement.classList.contains("pr-bar-hidden");
+
   // ---------- 백그라운드 준비 상태 칩: status('glossary', '용어', 'loading'|'ready'|'error'|null, {onRetry}) ----------
   const statuses = new Map();
   function status(key, label, state, { onRetry } = {}) {
@@ -387,10 +461,11 @@
     return true;
   }
 
-  document.addEventListener("DOMContentLoaded", () => $("bar-more")?.addEventListener("click", openMenu));
+  // ui.js는 body 끝(헤더 다음)에서 돌므로 바로 연결. DOMContentLoaded는 defer된 CDN 스크립트까지 기다려 느린 망에서 메뉴가 안 열림
+  $("bar-more")?.addEventListener("click", openMenu);
 
   window.PaperUI = Object.assign(api, {
     h, layer, topLayer, closeLayers, dragDown, peek, toast, addBarButton, addFab, homeSection, status, feedback,
-    cloneClean, copy, share, download,
+    cloneClean, copy, share, download, topSlot, bottomSlot, setBarHidden, isBarHidden,
   });
 })();

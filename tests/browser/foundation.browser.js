@@ -14,10 +14,16 @@ const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// 바깥 네트워크는 전부 막고(빈 응답), /api/ask는 테스트가 정한 답으로
-async function newPage(browser, { init, ask, routes } = {}) {
-  const ctx = await browser.newContext({ viewport: { width: 412, height: 800 }, serviceWorkers: "block" });
-  await ctx.route(u => !u.href.startsWith(BASE), r => r.fulfill({ status: 200, body: "", contentType: "text/plain" }));
+// 바깥 네트워크는 전부 막고(빈 응답), /api/ask는 테스트가 정한 답으로. 논문 그림은 width/height 속성과 같은 비율의
+// SVG로 (실제처럼 자리 크기 그대로 로드됨 — 빈 응답이면 깨진 그림으로 줄어들어 로드 뒤에 레이아웃이 밀림)
+const IMG_SIZE = { "x1.png": [598, 300] };
+async function newPage(browser, { init, ask, routes, viewport } = {}) {
+  const ctx = await browser.newContext({ viewport: viewport || { width: 412, height: 800 }, serviceWorkers: "block" });
+  await ctx.route(u => !u.href.startsWith(BASE), r => {
+    if (r.request().resourceType() !== "image") return r.fulfill({ status: 200, body: "", contentType: "text/plain" });
+    const [w, h] = IMG_SIZE[r.request().url().split("/").pop()] || [300, 200];
+    return r.fulfill({ status: 200, body: `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"/>`, contentType: "image/svg+xml" });
+  });
   const asks = [];
   await ctx.route(`${BASE}/api/ask`, async r => {
     const body = JSON.parse(r.request().postData() || "{}");
@@ -119,6 +125,12 @@ test("탭 처리기: .tr-ko 문장·번역 안 본문 링크(a.ltx_ref)는 처�
   assert.equal(r.onChip, null);
   assert.equal(typeof r.paperOff, "number");
   assert.equal(r.painted, 0);
+  // 빈 곳(본문 왼쪽·오른쪽 여백)은 가장 가까운 글자로 붙지 않고 null → 칠한 줄 옆 여백 탭은 칠한 구간이 아님
+  const margin = await page.evaluate(() => {
+    const tb = __range(document.getElementById("S1.p1")).getBoundingClientRect(), y = tb.top + tb.height / 2;
+    return [PaperAnchor.offsetAtPoint(3, y), PaperAnchor.offsetAtPoint(innerWidth - 3, y), PaperAnchor.paintedAt("t-zz", innerWidth - 3, y)];
+  });
+  assert.deepEqual(margin, [null, null, -1]);
   await page.click("#t-s");
   await page.click("#t-ref");
   assert.deepEqual(await page.evaluate(() => [location.hash, __hits]), ["", ["tr", "ref"]], "번역 문장·a.ltx_ref 탭은 처리기로 (기본 이동 없음)");
@@ -351,6 +363,232 @@ test("KaTeX CSS가 느려도 본문 페인트·공용 스크립트가 기다리�
   await page.goto(PAPER, { waitUntil: "commit" });
   await page.waitForFunction(() => window.PaperApp && performance.getEntriesByName("first-contentful-paint").length, null, { timeout: 2500 });
   assert.ok(Date.now() - t0 < 2500);
+});
+
+test("아래쪽 줄: 좁은 화면에서도 돌아가기·답변 보기·FAB가 겹치지 않고, 선택 버튼 줄이 뜨면 함께 올라감", async browser => {
+  for (const width of [412, 360, 320]) {
+    const page = await newPage(browser, { viewport: { width, height: 760 } });
+    await open(page);
+    await page.evaluate(async () => {
+      PaperUI.addFab({ id: "ask-paper", label: "논문에 질문", order: 10, onClick: () => { window.__fab = 1; } });
+      PaperApp.openSheet({ quote: "x", selection: "x" });
+      await PaperApp.ask("Q");
+      PaperApp.minimizeSheet();
+      PaperNav.jumpTo(document.getElementById("A1"), { smooth: false });
+    });
+    await sleep(100);
+    const probe = () => page.evaluate(() => {
+      const ids = ["back-chip", "pill-open", "pill-x"];
+      const els = [...ids.map(id => document.getElementById(id)), document.querySelector(".pr-fab")];
+      const rects = els.map(e => e.getBoundingClientRect());
+      const overlap = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+      const groups = [rects[0], rects[1], rects[2], rects[3]];
+      const pairs = [[0, 1], [0, 2], [0, 3], [1, 3], [2, 3]].filter(([i, j]) => overlap(groups[i], groups[j]));
+      const hits = els.map((e, i) => { const b = rects[i]; return e.contains(document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2)); });
+      const selBar = document.getElementById("sel-bar");
+      return { pairs, hits, bottom: Math.max(...rects.map(b => b.bottom)), selTop: selBar.hidden ? null : selBar.getBoundingClientRect().top };
+    });
+    const r = await probe();
+    assert.deepEqual([r.pairs, r.hits], [[], [true, true, true, true]], `${width}px ${JSON.stringify(r)}`);
+    await page.evaluate(() => PaperApp.selectRange(__range(document.getElementById("S1.p1"), 8)));
+    await sleep(100);
+    const s = await probe();
+    assert.deepEqual([s.pairs, s.hits], [[], [true, true, true, true]], `${width}px 선택 중 ${JSON.stringify(s)}`);
+    assert.ok(s.selTop != null && s.bottom <= s.selTop, `선택 버튼 줄 위로 ${JSON.stringify(s)}`);
+    await page.context().close();
+  }
+});
+
+test("CDN이 느려도 ⋯ 메뉴는 바로 열리고, 새로고침 후 '답변 보기' 복원도 CDN을 기다리지 않음", async browser => {
+  const slow = async r => { await sleep(3000); try { await r.fulfill({ body: "", contentType: "text/javascript" }); } catch { /* 닫힘 */ } };
+  const page = await newPage(browser, { routes: [[/marked\.min\.js/, slow]] });
+  await page.goto(PAPER, { waitUntil: "commit" });
+  await page.waitForFunction(() => window.PaperApp && !document.getElementById("bar-more").hidden && document.readyState !== "complete");
+  await page.click("#bar-more");
+  assert.deepEqual(await page.evaluate(() => [!!document.querySelector(".pr-menu-peek"), document.readyState === "complete"]), [true, false]);
+  await page.waitForFunction(() => document.readyState === "complete", null, { timeout: 8000 });
+  await page.evaluate(async () => {
+    PaperUI.closeLayers(() => true);
+    PaperApp.openSheet({ quote: "x", selection: "x" });
+    await PaperApp.ask("Q");
+  });
+  await page.reload({ waitUntil: "commit" });
+  await page.waitForFunction(() => window.PaperApp && document.getElementById("sheet-pill").hidden === false, null, { timeout: 2500 });
+  assert.equal(await page.evaluate(() => document.readyState === "complete"), false, "CDN이 오기 전에 복원");
+  assert.equal(await page.evaluate(() => PaperApp.session.history.length), 2);
+});
+
+test("시트가 열린 채 본문 해시 링크를 누르면 시트는 그대로, 점프로 처리 (뒤로가기: 점프 → 시트 순)", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  await page.evaluate(async () => { PaperApp.openSheet({ quote: "x", selection: "x" }); await PaperApp.ask("Q"); });
+  const len0 = await page.evaluate(() => history.length);
+  const pt = await page.evaluate(() => {
+    const a = document.querySelector('#paper a[href="#bib.bib1"]');
+    a.scrollIntoView({ block: "start" });
+    window.scrollBy(0, -120);
+    const b = a.getBoundingClientRect();
+    return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+  });
+  await page.mouse.click(pt.x, pt.y);
+  await sleep(150);
+  const st = () => page.evaluate(() => ({ sheet: !document.getElementById("sheet").hidden, hash: location.hash, depth: PaperNav.depth }));
+  assert.deepEqual(await st(), { sheet: true, hash: "", depth: 1 });
+  assert.equal(await page.evaluate(() => history.length), len0, "history 항목을 더 쌓지 않음 (표지 하나 유지)");
+  await page.goBack();
+  await sleep(200);
+  assert.deepEqual(await st(), { sheet: true, hash: "", depth: 0 });
+  await page.goBack();
+  await sleep(200);
+  assert.deepEqual(await sheetState(page), { sheet: false, pill: true });
+  // location.hash로 해시 이동(항목 추가)이 생겨도 레이어 Back으로 오인하지 않음
+  await page.evaluate(() => { PaperApp.restoreSheet(); location.hash = "#S2"; });
+  await sleep(200);
+  assert.deepEqual(await sheetState(page), { sheet: true, pill: false });
+  await page.goBack(); // #S2 → 표지
+  await sleep(200);
+  assert.deepEqual(await sheetState(page), { sheet: true, pill: false });
+  await page.goBack(); // 표지 → 바탕: 시트 내려두기
+  await sleep(200);
+  assert.deepEqual(await sheetState(page), { sheet: false, pill: true });
+});
+
+test("peek는 열린 뷰어(z 30)·다른 peek 위로 쌓임", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  const z = await page.evaluate(() => {
+    const a = PaperUI.peek({ title: "a", body: "a" });
+    PaperUI.layer(() => {}, { kind: "viewer" });
+    const b = PaperUI.peek({ title: "b", body: "b" });
+    const c = PaperUI.peek({ title: "c", body: "c" });
+    return [a, b, c].map(p => Number(p.el.style.zIndex));
+  });
+  assert.deepEqual(z, [26, 32, 34]);
+});
+
+test("번역 모드: .tr-ko 글자 탭도 시트를 내려둠", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  await page.evaluate(() => {
+    const ko = document.createElement("div");
+    ko.className = "tr-ko";
+    ko.innerHTML = '<span class="t-s">번역된 문장입니다. 이것은 번역입니다.</span>';
+    PaperAnchor.insertUI(document.getElementById("S1.p1"), ko);
+    ko.scrollIntoView({ block: "start" });
+    window.scrollBy(0, -120);
+    PaperApp.openSheet({ quote: "x", selection: "x" });
+  });
+  await page.click(".tr-ko .t-s");
+  assert.deepEqual(await sheetState(page), { sheet: false, pill: false }, "기록 없는 시트는 닫힘");
+});
+
+test("addLocalTurn: 질문 없이 로컬 내용을 턴으로 (기록·저장 없음), 시트 도구는 열 때마다·refresh로 다시 그림", async browser => {
+  const page = await newPage(browser, { ask: () => "A" });
+  await open(page);
+  const r = await page.evaluate(async () => {
+    window.__offline = false;
+    PaperApp.addSheetTool({ id: "t:net", render: () => (__offline ? PaperUI.h("span", { id: "t-net", text: "네트워크 연결 필요" }) : null) });
+    PaperApp.openSheet({ quote: "x", selection: "x" });
+    const toolsA = document.getElementById("sheet-tools").hidden;
+    __offline = true;
+    PaperApp.refreshSheetTools();
+    const toolsB = !!document.getElementById("t-net");
+    const t = PaperApp.addLocalTurn({ shown: "번역", markdown: "캐시된 번역", actions: [{ label: "더 자세히", onClick: () => PaperApp.ask("더 자세히") }] });
+    const local = { turn: t.turnEl.classList.contains("turn-local"), text: t.answerEl.textContent, hist: PaperApp.session.history.length,
+      saved: PaperStore.session.get(`app:thread:${PaperApp.baseId}`).history.length };
+    t.toolsEl.querySelector("button").click();
+    await new Promise(r => setTimeout(r, 300));
+    return { toolsA, toolsB, local, hist: PaperApp.session.history.map(x => x.content), turns: document.querySelectorAll("#answer .turn").length };
+  });
+  assert.deepEqual(r, { toolsA: true, toolsB: true, local: { turn: true, text: "캐시된 번역", hist: 0, saved: 0 }, hist: ["더 자세히", "A"], turns: 2 });
+  const back = await page.evaluate(() => { __offline = false; PaperApp.minimizeSheet(); __offline = true; PaperApp.restoreSheet(); return !!document.getElementById("t-net"); });
+  assert.equal(back, true, "다시 열면 도구를 다시 그림");
+});
+
+test("paint {raw: true}: 색인 밖(.tr-ko) Range도 칠하고 paintedAt으로 찾음", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  const r = await page.evaluate(() => {
+    const ko = document.createElement("div");
+    ko.className = "tr-ko";
+    ko.innerHTML = '<span id="t-k1">첫 번째 번역 문장.</span> <span id="t-k2">두 번째 번역 문장.</span>';
+    PaperAnchor.insertUI(document.getElementById("S1.p1"), ko);
+    ko.scrollIntoView({ block: "center" });
+    const rg = document.createRange();
+    rg.selectNodeContents(document.getElementById("t-k2"));
+    PaperAnchor.paint("t-as", [rg], { raw: true, priority: 30 });
+    const hl = CSS.highlights.get("t-as");
+    const b = document.getElementById("t-k2").getBoundingClientRect(), b1 = document.getElementById("t-k1").getBoundingClientRect();
+    return { n: hl.size, text: [...hl][0].toString(), hit: PaperAnchor.paintedAt("t-as", b.left + 3, b.top + b.height / 2),
+      miss: PaperAnchor.paintedAt("t-as", b1.left + 3, b1.top + b1.height / 2) };
+  });
+  assert.deepEqual(r, { n: 1, text: "두 번째 번역 문장.", hit: 0, miss: -1 });
+});
+
+test("헤더 아래 띠: --bar-h는 실제 헤더 높이, 자리 순서는 표대로, 헤더를 숨기면 띠가 맨 위로", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  const r = await page.evaluate(async () => {
+    PaperUI.status("t", "용어", "loading");
+    PaperUI.topSlot("glossary").textContent = "뜻";
+    PaperUI.topSlot("toc-progress").textContent = "막대";
+    PaperUI.topSlot("in-paper-search");
+    window.scrollTo(0, 600);
+    await new Promise(r => setTimeout(r, 100));
+    const bar = document.getElementById("bar"), ts = document.getElementById("top-stack");
+    const cssBar = getComputedStyle(document.documentElement).getPropertyValue("--bar-h").trim();
+    const order = [...ts.children].filter(c => getComputedStyle(c).display !== "none").map(c => c.dataset.slot);
+    const gap = Math.round(ts.getBoundingClientRect().top - bar.getBoundingClientRect().bottom);
+    let ev = null;
+    document.addEventListener("paper:bar", e => { ev = e.detail; });
+    PaperUI.setBarHidden(true);
+    await new Promise(r => setTimeout(r, 400));
+    return { cssBar, barH: bar.offsetHeight + "px", order, gap, hiddenTop: Math.round(ts.getBoundingClientRect().top), ev, hidden: PaperUI.isBarHidden() };
+  });
+  assert.equal(r.cssBar, r.barH);
+  assert.deepEqual(r.order, ["toc-progress", "app:status", "glossary"]);
+  assert.equal(r.gap, 0, "띠가 헤더 밑에 바로 (겹치거나 뜨지 않음)");
+  assert.deepEqual([r.hiddenTop, r.ev, r.hidden], [0, { hidden: true }, true]);
+});
+
+test("작은 계약들: selInfo.anchored, wrap은 pr-ui를 뗌, API 없는 기능은 feature() undefined, threadId는 이어가도 같음", async browser => {
+  const page = await newPage(browser, { ask: () => "A" });
+  await open(page);
+  const r = await page.evaluate(async () => {
+    const card = document.createElement("div");
+    card.style.userSelect = "text";
+    card.textContent = "기능이 넣은 개요 카드 글자입니다";
+    PaperAnchor.insertUI(document.querySelector(".ltx_authors"), card);
+    const rg = document.createRange();
+    rg.setStart(card.firstChild, 0);
+    rg.setEnd(card.firstChild, 6);
+    PaperApp.selectRange(rg);
+    const onCard = PaperApp.sel();
+    PaperApp.selectRange(__range(document.getElementById("S1.p1"), 8));
+    const onPaper = PaperApp.sel();
+    const text0 = PaperAnchor.index().text;
+    const o = PaperAnchor.offsetsOfElement(document.getElementById("S1.p1"));
+    const els = PaperAnchor.wrap(o.start + 2, o.start + 9, () => { const s = document.createElement("span"); s.className = "pr-ui tr-ko gl-ruby"; return s; });
+    PaperApp.registerFeature("t-none");
+    let threw = false;
+    try { PaperApp.feature("t-none")?.add?.({}); PaperApp.feature("t-none")?.add({}); } catch { threw = true; }
+    document.getSelection().removeAllRanges();
+    const s1 = PaperApp.openSheet({ quote: "q", selection: "S" });
+    await PaperApp.ask("Q1");
+    const { quote, selection, context, section, history, shown, meta, threadId } = PaperApp.session;
+    PaperApp.closeSheet();
+    const s2 = PaperApp.openSheet({ quote, selection, context, section, history, shown, meta, threadId });
+    return {
+      card: [onCard.anchored, onCard.start, onCard.inTranslation], paper: [onPaper.anchored, typeof onPaper.start],
+      wrapped: [els.length > 0, els[0].className, PaperAnchor.index().text === text0],
+      feature: [PaperApp.has("t-none"), PaperApp.feature("t-none"), threw],
+      thread: [s2.threadId === s1.threadId, s2.id !== s1.id, s1.threadId === s1.id],
+    };
+  });
+  assert.deepEqual(r, {
+    card: [false, null, false], paper: [true, "number"], wrapped: [true, "gl-ruby", true],
+    feature: [true, undefined, false], thread: [true, true, true],
+  });
 });
 
 (async () => {

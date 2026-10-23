@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{# core.render_page: 기능이 만드는 단순 페이지 (예: entry-routes의 HTML 없는 논문 초록). body_html은 호출한 쪽이 이스케이프 #}
+{% block title %}{{ title }}{% endblock %}
+{% block page %}{{ page }}{% endblock %}
+{% block body_attrs %}{% if arxiv_id %} data-arxiv-id="{{ arxiv_id }}"{% endif %}{% endblock %}
+{% block body %}
+<main class="pr-page">{{ body_html | safe }}</main>
+{% endblock %}

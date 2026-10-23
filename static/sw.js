@@ -14,10 +14,12 @@ const IMG_MAX = 60; // 다른 출처 이미지는 불투명 응답이라 용량�
 const PAGE_TIMEOUT = 3000;
 
 // 기능 확장용: routes에 {test(url, request), handle(event)} 를 넣으면 기본 처리보다 먼저 검사.
-// 확장이 자기 캐시를 쓰려면 PR_SW.keep(name)으로 등록 (activate가 KEEP에 없는 캐시는 지움)
+// 확장이 자기 캐시를 쓰려면 이름을 `${V}-…`로 짓고 PR_SW.keep(name)으로 등록 (activate가 KEEP에 없는 캐시는 지움)
 self.PR_SW = { V, SHELL, PAGES, API, CDN, IMG, SAVED, IMG_MAX, routes: [], onMessage: [],
   keep: name => { if (!KEEP.includes(name)) KEEP.push(name); } };
-try { importScripts("/features.sw.js"); } catch (e) { /* 확장이 없거나 오프라인 */ }
+// 확장 번들을 못 읽었으면(새 SW 설치 중 네트워크 끊김 등) 아무도 keep()을 못 불렀으므로 이 버전(V-)의 캐시는 지우지 않음
+let extLoaded = true;
+try { importScripts("/features.sw.js"); } catch (e) { extLoaded = false; /* 오프라인 등 */ }
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(SHELL).then(c => c.addAll(SHELL_URLS)).catch(() => {}).then(() => self.skipWaiting()));
@@ -25,7 +27,7 @@ self.addEventListener("install", e => {
 
 self.addEventListener("activate", e => {
   e.waitUntil(caches.keys()
-    .then(keys => Promise.all(keys.filter(k => !KEEP.includes(k)).map(k => caches.delete(k))))
+    .then(keys => Promise.all(keys.filter(k => !KEEP.includes(k) && (extLoaded || !k.startsWith(`${V}-`))).map(k => caches.delete(k))))
     .then(() => self.clients.claim()));
 });
 

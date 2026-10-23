@@ -30,7 +30,7 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 기능은 새 파일만으로 붙습니다. 계약과 자리표는 [docs/FEATURES.md](docs/FEATURES.md).
 
 - `features/<group>.py`: `router = APIRouter()` 를 두면 앱 시작 때 자동 등록 (`import app as core` 로 공용 헬퍼 사용)
-- `static/features/<group>.js|.css`: `/features.js`, `/features.css` 로 묶여 모든 페이지에 로드 (파일별 함수 스코프)
+- `static/features/<group>.js|.css`: `/features.js`, `/features.css` 로 묶여 모든 페이지에 로드 (JS는 파일마다 따로 파싱·실행: 한 파일의 문법·실행 오류가 다른 기능을 막지 않음)
 - 공용 화면 API: `PaperStore`, `PaperUI`, `PaperAnchor`, `PaperNav`, `PaperApp`
 
 ## 테스트
@@ -43,4 +43,5 @@ for f in tests/js/*.test.js; do node $f; done  # JS만
 ```
 
 `tests/test_browser.py`는 서버를 띄워 `tests/browser/*.browser.js`를 헤드리스 Chromium(Playwright)으로 돌립니다.
-`node -e "require('playwright')"`가 안 되거나 Chromium이 없으면 건너뜁니다.
+`node -e "require('playwright')"`가 안 되거나 Chromium이 없으면 건너뜁니다. `foundation.browser.js`는 기능이 없는 상태
+(빈 `static/features`, 서버 훅 없음)로, 기능의 `<group>.browser.js`는 전체 번들로 돕니다.

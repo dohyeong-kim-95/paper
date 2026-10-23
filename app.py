@@ -10,12 +10,14 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
+from html import escape as html_escape  # noqa: F401 - 기능용 (core.render_page 본문 이스케이프)
 from pathlib import Path
 from typing import Literal
 
 import anthropic
 import httpx
 from bs4 import BeautifulSoup, Comment, NavigableString
+from bs4.element import PreformattedString  # CData·ProcessingInstruction·Declaration·Doctype·Comment의 부모
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -57,7 +59,7 @@ def parse_arxiv_id(s: str) -> str | None:
     return m.group(1) if m else None
 
 
-CLEAN_VERSION = 2  # clean_article 규칙이 바뀌면 올림 → 디스크 캐시의 옛 논문도 읽을 때 다시 정리
+CLEAN_VERSION = 3  # clean_article 규칙이 바뀌면 올림 → 디스크 캐시의 옛 논문도 읽을 때 다시 정리
 UNSAFE_TAGS = ("iframe", "frame", "frameset", "object", "embed", "applet", "form", "base", "meta", "link",
                "animate", "set", "animatemotion", "animatetransform", "portal")
 URL_ATTRS = ("href", "src", "xlink:href", "action", "formaction", "poster", "background")
@@ -75,6 +77,10 @@ def _safe_url(value: str, tag: str, attr: str) -> bool:
 
 def sanitize_article(article) -> None:
     """논문 HTML은 | safe 로 그대로 넣으므로 스크립트가 될 수 있는 것은 모두 제거 (on* 속성, javascript: 등)"""
+    # 요소가 아닌 마크업(CDATA·처리 지시·선언·doctype·주석)은 bs4가 원문 그대로 다시 씀. 브라우저는 HTML 본문의
+    # '<![CDATA[' 등을 첫 '>'에서 끝나는 가짜 주석으로 읽으므로 파서가 글자로 본 '<img onerror>'가 살아남 → 모두 제거
+    for node in article.find_all(string=lambda s: isinstance(s, PreformattedString)):
+        node.extract()
     for el in article.find_all(UNSAFE_TAGS):
         el.decompose()
     for el in article.find_all(True):
@@ -179,8 +185,14 @@ def stream_claude(paper: dict, messages: list, max_tokens: int = 4000) -> Stream
             ) as stream:
                 async for text in stream.text_stream:
                     yield text
+                final = await stream.get_final_message()
+            if final.stop_reason == "max_tokens":
+                yield error_tail("응답이 너무 길어 잘렸습니다 (max_tokens).")
         except anthropic.APIError as e:
-            yield f"\n\n[오류] {e}"
+            yield error_tail(e)  # 한 줄로 (여러 줄 오류 본문이면 클라이언트 ERROR_TAIL이 못 알아봄)
+        except Exception as e:  # noqa: BLE001 - 어떤 실패든 [오류] 꼬리로 끝내서 성공한 답으로 저장되지 않게
+            log.exception("stream_claude failed")
+            yield error_tail(type(e).__name__)
 
     return StreamingResponse(gen(), media_type=TEXT, headers={"Cache-Control": "no-store"})
 
@@ -697,6 +709,13 @@ async def fetch_image(arxiv_id: str, url: str) -> tuple[str, bytes] | None:
 # ---------- 기능 에셋: static/features/*.js|css 를 한 파일로 묶어 서빙 ----------
 FEATURES_STATIC = STATIC_DIR / "features"
 _bundles: dict = {}
+# 페이지 번들 끝: 기능 등록(답변 슬롯 등)이 끝났음을 알림 → app.js가 저장된 대화를 복원 (CDN·DOMContentLoaded를 기다리지 않음)
+FEATURES_READY = ";window.PaperApp && PaperApp.featuresReady && PaperApp.featuresReady();\n"
+
+
+def _js_string(src: str) -> str:
+    # JS 문자열 리터럴 (한글은 그대로, 옛 엔진이 문자열 안에서 못 받는 U+2028/2029만 이스케이프)
+    return json.dumps(src, ensure_ascii=False).replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
 
 
 def feature_files(kind: str) -> list[Path]:
@@ -721,10 +740,14 @@ def feature_bundle(kind: str) -> tuple:
     for p in files:
         src = p.read_text(encoding="utf-8")
         if kind in ("js", "sw"):
-            # 파일마다 함수 스코프로 감싸서 최상위 const 충돌 방지, 런타임 오류는 파일 이름과 함께 기록
-            parts.append(f"/* ---- {p.name} ---- */\n;(function(){{try{{\n{src}\n}}catch(e){{console.error({json.dumps('[feature] ' + p.name)}, e)}}}})();")
+            # 파일마다 따로 파싱·실행 (new Function): 한 파일의 문법 오류(옛 iOS Safari가 모르는 문법 포함)나
+            # 런타임 오류가 다른 기능을 죽이지 않음. 오류는 파일 이름과 함께 기록, sourceURL로 개발자 도구에 원래 파일 이름
+            code = _js_string(f"{src}\n//# sourceURL=features/{p.name}")
+            parts.append(f"/* ---- {p.name} ---- */\ntry{{(new Function({code}))()}}catch(e){{console.error({json.dumps('[feature] ' + p.name)}, e)}}")
         else:
             parts.append(f"/* ---- {p.name} ---- */\n{src}")
+    if kind == "js":
+        parts.append(FEATURES_READY)
     body = "\n".join(parts) + "\n"
     etag = hashlib.sha1(body.encode()).hexdigest()[:12]
     hit = _bundles[kind] = (key, body, etag, [p.name for p in files])
@@ -802,6 +825,18 @@ def on_paper_missing(fn):
     /paper/{id}가 404일 때 등록 순서대로 불러 처음 나온 Response를 돌려줌. arxiv_id는 사용자 입력이므로 직접 검증할 것"""
     PAPER_MISSING_HOOKS.append(fn)
     return fn
+
+
+def render_page(request: Request, title: str, body_html: str, *, page: str = "abstract",
+                arxiv_id: str | None = None, status_code: int = 200) -> Response:
+    """base.html 위의 단순 페이지 (공용 스크립트·기능 번들·읽기 설정 포함). entry-routes의 초록 페이지 등.
+    body_html은 그대로(| safe) 들어가므로 외부·사용자 문자열은 html.escape 할 것. page는 body[data-page]"""
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", page):
+        raise ValueError(f"bad page name: {page!r}")
+    return templates.TemplateResponse(
+        request, "page.html",
+        {"title": title, "body_html": body_html, "page": page, "arxiv_id": arxiv_id}, status_code=status_code,
+    )
 
 
 @app.get("/paper/{arxiv_id}")

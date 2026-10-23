@@ -32,7 +32,7 @@ button, input { font: inherit; }
 
 .bar { position: sticky; top: 0; display: flex; align-items: center; gap: 12px; padding: 10px 16px;
   padding-top: calc(10px + env(safe-area-inset-top)); background: var(--bg); border-bottom: 1px solid var(--card);
-  z-index: var(--z-bar); font-size: 15px; }
+  z-index: var(--z-bar); font-size: 15px; transition: transform .2s ease; }
 .bar a { text-decoration: none; }
 .bar-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #bar-actions { display: flex; gap: 4px; }
@@ -40,8 +40,17 @@ button, input { font: inherit; }
   background: none; color: var(--fg); font-size: 14px; }
 .pr-bar-btn.active { background: var(--card); color: var(--accent); }
 .pr-dot::after { content: ""; position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
-#status-strip { position: sticky; top: calc(46px + env(safe-area-inset-top)); z-index: var(--z-bar); display: flex; gap: 6px;
-  flex-wrap: wrap; padding: 4px 16px; background: var(--bg); font-size: 12px; color: var(--muted); }
+/* 헤더 아래 띠: PaperUI.topSlot(id) 자리들이 정해진 순서로 (진행 막대·찾기 줄·배너·상태 칩·뜻 칩, §5.11).
+   --bar-h·--top-stack-h는 ui.js가 잼. --top-h = 화면 위에서 띠 아래 끝까지 (위쪽에 붙는 fixed 오버레이용) */
+:root { --top-h: calc(var(--bar-h, 53px) + var(--top-stack-h, 0px)); }
+#top-stack { position: sticky; top: var(--bar-h, calc(53px + env(safe-area-inset-top))); z-index: var(--z-bar);
+  display: flex; flex-direction: column; transition: top .2s ease; }
+#top-stack > [hidden], .pr-slot:empty { display: none; }
+/* 헤더 자동 숨김 (reading-settings → PaperUI.setBarHidden): 헤더는 위로, 띠는 화면 맨 위로 */
+.pr-bar-hidden .bar { transform: translateY(-100%); }
+.pr-bar-hidden #top-stack { top: env(safe-area-inset-top); }
+:root.pr-bar-hidden { --top-h: calc(env(safe-area-inset-top) + var(--top-stack-h, 0px)); }
+#status-strip { display: flex; gap: 6px; flex-wrap: wrap; padding: 4px 16px; background: var(--bg); font-size: 12px; color: var(--muted); }
 .pr-status { display: inline-flex; gap: 4px; align-items: center; padding: 1px 8px; border-radius: 999px; background: var(--card); }
 .pr-status[data-state="error"] { color: #dc2626; }
 .pr-status button { border: 0; background: none; color: var(--accent); font-size: 12px; padding: 0 2px; }
@@ -73,19 +82,23 @@ mark.pa-mark { background: rgba(250, 204, 21, .35); color: inherit; }
   color: var(--fg); font-size: 15px; }
 #sel-bar button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-#fab-stack { position: fixed; right: 16px; bottom: calc(24px + env(safe-area-inset-bottom)); z-index: var(--z-fab);
-  display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
-.pr-sel-active #fab-stack { bottom: calc(76px + env(safe-area-inset-bottom)); }
-.pr-sheet-open #fab-stack { display: none; }
+/* 아래쪽 줄: ↩ 돌아가기 · 답변 보기 · FAB가 한 flex 줄이라 서로 겹치지 않음. 좁으면 FAB가 윗줄로 (wrap-reverse).
+   #bottom-slots(PaperUI.bottomSlot)는 그 위 전체 너비 줄 (오디오 재생기처럼 잠깐 뜨는 것). 선택 버튼 줄이 뜨면 통째로 위로 */
+#bottom-dock { position: fixed; left: 16px; right: 16px; bottom: calc(24px + env(safe-area-inset-bottom)); z-index: var(--z-fab);
+  display: flex; flex-wrap: wrap-reverse; align-items: flex-end; gap: 10px 8px; pointer-events: none; }
+#bottom-dock > *, #bottom-slots > * { pointer-events: auto; }
+.pr-sel-active #bottom-dock { bottom: calc(76px + env(safe-area-inset-bottom)); }
+#bottom-slots { flex: 1 0 100%; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+#bottom-slots:empty { display: none; }
+#fab-stack { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+#fab-stack:empty, .pr-sheet-open #fab-stack { display: none; }
 .pr-fab { display: inline-flex; gap: 6px; align-items: center; padding: 12px 18px; border: 0; border-radius: 999px;
   background: var(--accent); color: #fff; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
-#back-chip { position: fixed; left: 16px; bottom: calc(24px + env(safe-area-inset-bottom)); z-index: var(--z-fab);
-  padding: 8px 14px; border: 0; border-radius: 999px; background: var(--fg); color: var(--bg); font-size: 14px;
+#back-chip { flex: none; padding: 8px 14px; border: 0; border-radius: 999px; background: var(--fg); color: var(--bg); font-size: 14px;
   box-shadow: 0 4px 16px rgba(0,0,0,.25); }
 #back-chip[hidden] { display: none; }
-.pr-sel-active #back-chip { bottom: calc(76px + env(safe-area-inset-bottom)); }
-#sheet-pill { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(24px + env(safe-area-inset-bottom));
-  z-index: var(--z-fab); display: flex; border-radius: 999px; background: var(--accent); box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+#sheet-pill { flex: none; margin: 0 auto; display: flex; border-radius: 999px; background: var(--accent);
+  box-shadow: 0 4px 16px rgba(0,0,0,.25); }
 #sheet-pill[hidden] { display: none; }
 #sheet-pill button { border: 0; background: none; color: #fff; padding: 10px 14px; font-size: 15px; }
 #sheet-pill #pill-x { padding-left: 4px; opacity: .8; }
@@ -179,6 +192,6 @@ mark.pa-mark { background: rgba(250, 204, 21, .35); color: inherit; }
   .sheet, .sheet.full, .pr-peek { left: auto; top: 0; right: 0; bottom: 0; width: 420px; height: auto; max-height: none;
     border-radius: 0; padding-top: env(safe-area-inset-top); }
   .pr-sheet-open .paper { margin-right: 440px; }
-  .pr-sheet-open .bar, .pr-sheet-open #status-strip { margin-right: 420px; }
+  .pr-sheet-open .bar, .pr-sheet-open #top-stack { margin-right: 420px; }
   .pr-peek-backdrop { background: transparent; }
 }

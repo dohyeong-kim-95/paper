@@ -241,9 +241,14 @@
     return o ? quoteAt(idx.text, o.start, o.end) : null;
   }
 
+  // 점이 사각형들 안인지 (세로 여유 4px: 줄 간격 안쪽 탭도 그 줄로)
+  const inRects = (rects, x, y, padX = 1, padY = 4) =>
+    [...rects].some(b => x >= b.left - padX && x <= b.right + padX && y >= b.top - padY && y <= b.bottom + padY);
+
   // 화면 좌표 → 색인 오프셋 (탭 위치가 칠한 구간 안인지 판정할 때).
   // 색인된 본문 글자(텍스트 노드·수식) 위가 아니면 null: 기능 UI(.pr-ui), 번역(.tr-ko), 버튼, 각주 본문, 빈 곳 등
-  // (caret API는 user-select:none 영역에서 다음 본문 글자로 건너뛰므로 elementFromPoint로 먼저 확인)
+  // (caret API는 user-select:none 영역에서 다음 본문 글자로 건너뛰므로 elementFromPoint로 먼저 확인,
+  //  빈 곳(여백·짧은 줄 오른쪽)에서는 가장 가까운 글자로 붙으므로 그 글자의 사각형 안인지 다시 확인)
   function offsetAtPoint(x, y) {
     const r = root();
     const hit = r && document.elementFromPoint(x, y);
@@ -261,29 +266,41 @@
     } else return null;
     if (!node || !r.contains(node)) return null;
     const idx = index();
-    if (node.nodeType === 3 && idx.nodeSeg.has(node)) return pointToOffset(node, off, false, idx);
+    if (node.nodeType === 3 && idx.nodeSeg.has(node)) {
+      const g = document.createRange();
+      g.setStart(node, Math.max(0, Math.min(off, node.length) - 1));
+      g.setEnd(node, Math.min(node.length, off + 1));
+      return inRects(g.getClientRects(), x, y) ? pointToOffset(node, off, false, idx) : null;
+    }
     const el = node.nodeType === 1 ? node : node.parentElement;
     const m = el && el.closest("math");
-    return m && idx.nodeSeg.has(m) ? idx.nodeSeg.get(m).start : null;
+    return m && idx.nodeSeg.has(m) && inRects(m.getClientRects(), x, y) ? idx.nodeSeg.get(m).start : null;
   }
 
   // ---------- 칠하기: CSS Custom Highlight API, 없으면 <mark> 감싸기 ----------
   // fallback:false → Highlight API가 없을 때 아무것도 안 칠함 (밑줄만 쓰는 gl-term, 자주 다시 칠하는 ps-match 등).
+  // raw:true → 색인 밖(.tr-ko 번역 등)의 Range를 오프셋으로 바꾸지 않고 그대로 칠함 (살아 있는 Range, <mark> 대체 없음).
+  //   번역 DOM을 바꿨으면 다시 paint. paintedAt은 Range의 화면 사각형으로 판정
   // 칠하기·지우기는 paper:dom-changed를 보내지 않음 (그 이벤트에서 다시 칠해도 반복되지 않게)
   const hasHL = () => typeof CSS !== "undefined" && CSS.highlights && typeof Highlight !== "undefined";
-  const painted = new Map(); // name -> {items: [{start,end}], marks: [Element], priority, fallback}
+  const painted = new Map(); // name -> {items: [{start,end}] | [Range], marks: [Element], priority, fallback, raw}
+  const isRange = it => !!it && typeof it === "object" && "startContainer" in it;
 
-  function paint(name, items, { priority = 0, fallback = true } = {}) {
+  function paint(name, items, { priority = 0, fallback = true, raw = false } = {}) {
     clear(name);
-    const offs = (items || []).map(it => (it && typeof it.start === "number" && !("startContainer" in it) ? it : offsetsOf(it))).filter(Boolean);
-    const entry = { items: offs, marks: [], priority, fallback };
+    const offs = raw
+      ? (items || []).filter(isRange).map(r => r.cloneRange())
+      : (items || []).map(it => (it && typeof it.start === "number" && !isRange(it) ? it : offsetsOf(it))).filter(Boolean);
+    const entry = { items: offs, marks: [], priority, fallback: fallback && !raw, raw };
     painted.set(name, entry);
     render(name, entry);
     return offs;
   }
   function render(name, entry) {
     if (hasHL()) {
-      const ranges = entry.items.map(o => rangeAt(o.start, o.end)).filter(Boolean);
+      const ranges = entry.raw
+        ? entry.items.filter(r => !r.collapsed && r.startContainer.isConnected)
+        : entry.items.map(o => rangeAt(o.start, o.end)).filter(Boolean);
       if (!ranges.length) { CSS.highlights.delete(name); return; }
       const hl = new Highlight(...ranges);
       hl.priority = entry.priority;
@@ -307,6 +324,7 @@
   function paintedAt(name, x, y) {
     const e = painted.get(name);
     if (!e) return -1;
+    if (e.raw) return e.items.findIndex(r => !r.collapsed && inRects(r.getClientRects(), x, y, 0, 0));
     const off = offsetAtPoint(x, y);
     if (off == null) return -1;
     return e.items.findIndex(o => off >= o.start && off < o.end);
@@ -314,11 +332,14 @@
 
   // ---------- 안전한 DOM 변경 (glossary·section-translate만 사용) ----------
   // 색인 구간의 텍스트 노드를 잘라 make()가 만든 요소로 감쌈. 텍스트·순서는 그대로라 오프셋 불변.
+  // 감싼 요소에는 본문 글자가 들어 있으므로 pr-ui/tr-ko를 붙이면 안 됨 (색인에서 빠져 오프셋이 밀림) → 떼어 냄.
+  // 본문이 아닌 자식(<rt> 뜻 등)에만 pr-ui
   function wrap(start, end, make, { silent = false } = {}) {
     const idx = index(), els = [];
     for (const seg of idx.segs.slice()) {
       if (seg.end <= start || seg.start >= end) continue;
       const w = make();
+      w.classList.remove("pr-ui", "tr-ko");
       if (seg.math) { seg.node.before(w); w.append(seg.node); els.push(w); continue; }
       let node = seg.node;
       const a = Math.max(start, seg.start) - seg.start, b = Math.min(end, seg.end) - seg.start;

@@ -55,11 +55,13 @@
   // 시트 세션 만들기. 세션 훅은 새 세션(history 없음)에서만 실행: 저장된 대화를 그때의 고정 필드
   // (selection·context·section·extra·endpoint)로 이어가면 훅이 덧붙인 것이 이미 들어 있으므로 다시 붙이지 않음
   // → 첫 user 턴이 바이트까지 같아 캐시 적중
+  // threadId: 대화(스레드)의 고정 id. 저장된 대화를 이어갈 때 그 threadId를 다시 주면 그대로 (highlights-notes가 같은 스레드를 갱신)
   function makeSession(opts = {}, arxivId = null, hooks = [], onErr = () => {}) {
     const selection = opts.selection || "";
     const history = (opts.history || []).map(t => ({ role: t.role, content: String(t.content) }));
+    const id = Math.random().toString(36).slice(2);
     const s = {
-      id: Math.random().toString(36).slice(2), arxivId,
+      id, threadId: opts.threadId ? String(opts.threadId) : id, arxivId,
       quote: opts.quote ?? selection, selection,
       context: opts.context || "", section: opts.section || "",
       endpoint: opts.endpoint || "/api/ask", extra: { ...(opts.extra || {}) },
@@ -118,7 +120,9 @@
 
   // ---------- 기능 목록 ----------
   const features = new Map();
-  const registerFeature = (id, featureApi = true) => void features.set(id, featureApi);
+  const registerFeature = (id, featureApi = null) => void features.set(id, featureApi);
+  // API 객체가 없으면 undefined → 부르는 쪽의 PaperApp.feature(id)?.fn?.(...)이 조용히 넘어감
+  const feature = id => { const a = features.get(id); return a && (typeof a === "object" || typeof a === "function") ? a : undefined; };
 
   // ---------- 선택 ----------
   let lastSel = null, hadSel = false, collapsedAt = 0, downHadSel = false, selTimer, selHideTimer;
@@ -152,9 +156,10 @@
     const sectionEl = startEl && startEl.closest("section");
     const latex = mathsIn(range).map(m => m.getAttribute("alttext") || "").filter(Boolean);
     const prose = base.text.replace(/\$[^$]*\$/g, " ").trim();
-    const anchored = !!(q && q.quote); // 번역(.tr-ko)만 고른 선택은 색인 밖이라 저장할 위치가 없음
+    // 색인 밖(.tr-ko 번역, 기능이 선택 가능하게 둔 .pr-ui 카드 등)만 고른 선택은 저장할 위치가 없음 → anchored false
+    const anchored = !!(q && q.quote);
     return {
-      ...base, raw, range,
+      ...base, raw, range, anchored,
       start: anchored ? q.start : null, end: anchored ? q.end : null, prefix: anchored ? q.prefix : "", suffix: anchored ? q.suffix : "",
       inTranslation: !!(startEl && startEl.closest(".tr-ko")),
       latex, isMath: latex.length > 0 && prose.split(/\s+/).filter(Boolean).length <= 2,
@@ -330,7 +335,8 @@
     const turn = h("div", { class: "turn" });
     const a = h("div", { class: "a" });
     const tools = h("div", { class: "turn-tools pr-ui" });
-    turn.append(h("div", { class: "q", text: shown }), a, tools);
+    if (shown) turn.append(h("div", { class: "q", text: shown }));
+    turn.append(a, tools);
     answerEl.append(turn);
     turn.scrollIntoView({ block: "nearest" });
     return { turn, a, tools };
@@ -443,6 +449,25 @@
     await runTurn(s, payload, addTurn(shown), { ...meta, shown });
   }
 
+  // 질문 없이 시트에 로컬 내용(캐시된 번역 쌍, 저장된 뜻 …)을 턴처럼 보여 줌. Claude 호출·history·저장·answer-done 없음,
+  // 다음 openSheet(또는 새로고침)에서 사라짐. 그 뒤 ask()로 이어 물으면 보통 턴이 붙음. 반환: {turnEl, answerEl, toolsEl, slot(id), remove}
+  function addLocalTurn({ shown = "", node = null, markdown = null, actions = [] } = {}) {
+    if (!session || !answerEl) return null;
+    if (sheet.hidden) restoreSheet();
+    const t = addTurn(shown);
+    t.turn.classList.add("turn-local");
+    if (node instanceof Node) t.a.append(node);
+    else renderNow(t.a, String(markdown ?? ""));
+    const remove = () => t.turn.remove();
+    if (actions.length) {
+      slot(t.tools, "local").append(...actions.map(a => h("button", {
+        type: "button", text: a.label,
+        onclick: () => { try { a.onClick({ turnEl: t.turn, answerEl: t.a, remove }); } catch (e) { err(e); } },
+      })));
+    }
+    return { turnEl: t.turn, answerEl: t.a, toolsEl: t.tools, slot: id => slot(t.tools, id), remove };
+  }
+
   function discardSession(clearSelection) {
     abortCurrent();
     session = null;
@@ -472,6 +497,7 @@
     // 시트(z 20)보다 위에 뜨는 오버레이(peek z 25, 그림 뷰어 z 30, 목차 서랍 …)는 먼저 닫음 (reason "sheet") —
     // 시트가 그 밑에 깔리지 않게. 점프('↩ 돌아가기')와 keepOnSheet 레이어(화면 위쪽 찾기 줄 등)는 그대로
     UI.closeLayers(l => l.kind !== "jump" && l.kind !== "sheet" && !l.keepOnSheet, "sheet");
+    renderSheetTools(); // 열 때마다 다시 (오프라인 여부 등 바뀌었을 수 있음). 열린 채로는 PaperApp.refreshSheetTools()
     if (!sheet.hidden) return;
     const prev = document.activeElement;
     restoreFocus = () => { if (prev && prev.isConnected) try { prev.focus({ preventScroll: true }); } catch { /* 무시 */ } };
@@ -488,7 +514,6 @@
     quoteEl.hidden = !s.quote;
     if (titleEl) titleEl.textContent = s.title || "질문";
     renderPresets();
-    renderSheetTools();
     answerEl.replaceChildren();
   }
 
@@ -530,6 +555,7 @@
 
   // 새로고침·탭 폐기 후에도 열려 있던 대화를 '답변 보기'로 복원
   function restoreThread() {
+    if (session) return; // 번들이 오기 전에 이미 새 대화를 열었음
     const saved = store && baseId ? store.session.get(threadKey()) : null;
     if (!saved || !Array.isArray(saved.history) || saved.history.length < 2) return;
     session = { shown: [], meta: [], extra: {}, ...saved, arxivId };
@@ -571,10 +597,11 @@
       qInput.value = "";
       if (v) ask(v, { via });
     });
-    // 본문 빈 곳을 탭하면 시트를 내려둠 (가장 낮은 우선순위, 링크·기능 UI(.pr-ui) 위는 제외)
+    // 본문 빈 곳을 탭하면 시트를 내려둠 (가장 낮은 우선순위, 링크·기능 UI(.pr-ui) 위는 제외.
+    // 단 번역문 .tr-ko는 본문처럼: 번역 모드에서는 보이는 글자 거의 전부가 .tr-ko)
     addTapHandler({
       id: "app:minimize", priority: -1000,
-      test: e => !sheet.hidden && !e.target.closest("a[href], .pr-ui"),
+      test: e => !sheet.hidden && !e.target.closest("a[href]") && (!e.target.closest(".pr-ui") || !!e.target.closest(".tr-ko")),
       handle: () => minimizeSheet(),
     });
     addSelectionAction({
@@ -591,8 +618,16 @@
         },
       });
     }
-    document.addEventListener("DOMContentLoaded", restoreThread);
   }
+  // 저장된 대화 복원은 기능 등록(답변 슬롯 등)이 끝난 뒤 한 번: /features.js 번들 끝이 featuresReady()를 부름
+  // (CDN 스크립트·DOMContentLoaded를 기다리지 않음). 번들이 못 왔으면 DOMContentLoaded에
+  let ready = false;
+  function featuresReady() {
+    if (ready) return;
+    ready = true;
+    if (sheet) restoreThread();
+  }
+  document.addEventListener("DOMContentLoaded", featuresReady);
 
   // ---------- 읽어주기 (speechSynthesis는 앱 전체에서 여기 하나만 사용) ----------
   const tts = (() => {
@@ -671,7 +706,7 @@
 
   window.PaperApp = Object.assign(api, {
     page, arxivId, baseId, warm, idle,
-    registerFeature, has: id => features.has(id), feature: id => features.get(id),
+    registerFeature, has: id => features.has(id), feature, featuresReady,
     addOfflineUrl: url => void offlineUrls.add(String(url)), offlineUrls: () => [...offlineUrls],
     sel, selectRange, justSelected, addSelectionAction, addTapHandler, setSelBar,
     addPreset, removePreset, presets: () => presets.slice(),
@@ -679,7 +714,8 @@
     addSessionHook: fn => void sessionHooks.push(fn),
     addAnswerAction: a => void UI.upsert(answerActions, { order: SLOTS[a.id] ?? 500, ...a }),
     addSheetTool: t => void UI.upsert(sheetTools, { order: 500, ...t }),
-    openSheet, ask, closeSheet, minimizeSheet, restoreSheet,
+    refreshSheetTools: () => renderSheetTools(),
+    openSheet, ask, addLocalTurn, closeSheet, minimizeSheet, restoreSheet,
     isSheetOpen: () => !!sheet && !sheet.hidden,
     tts,
     on: (name, fn) => document.addEventListener(`paper:${name}`, e => fn(e.detail, e)),

@@ -93,6 +93,13 @@ test("activate는 SAVED와 확장이 PR_SW.keep으로 등록한 캐시를 지우
   assert.deepEqual((await t.caches.keys()).sort(), ["ext-offline", "paper-v2-api", "paper-v2-saved"]);
 });
 
+test("확장 번들(importScripts)을 못 읽으면 이 버전의 확장 캐시는 지우지 않음 (옛 버전 캐시만 정리)", async () => {
+  const t = loadSW(); // importScripts가 던짐 = 설치 중 오프라인
+  for (const n of ["paper-v1-img", "paper-v2-offline-save", "paper-v2-api", "other"]) await t.caches.open(n);
+  await t.activate();
+  assert.deepEqual((await t.caches.keys()).sort(), ["paper-v2-api", "paper-v2-offline-save"]);
+});
+
 test("GET /api/*: X-Offline-Cacheable 응답만 저장, '[오류]' 꼬리로 끝나는 텍스트(실패한 스트림)는 저장 안 함", async () => {
   const t = loadSW();
   const text = (body, cacheable = true) => () => new Response(body, {

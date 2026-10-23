@@ -72,6 +72,24 @@ class AskTests(CoreTestCase):
         self.assertTrue(r.text.startswith("부분 "))
         self.assertIn("[오류]", r.text)
 
+    def test_stream_failures_end_with_single_error_line(self):
+        # 클라이언트 ERROR_TAIL(/\n\n\[오류\][^\n]*$/)이 알아봐야 실패로 처리 (성공한 답으로 기록·저장되지 않게)
+        tail = __import__("re").compile(r"\n\n\[오류\][^\n]*$")
+        self.claude.push({"chunks": ["part"], "error": api_error("502 - <html>\n<body>bad gateway</body>\n</html>"), "error_at": 1})
+        r = self.ask(question="Q")
+        self.assertRegex(r.text, tail)
+        self.assertTrue(r.text.startswith("part\n\n[오류] "))
+        self.claude.push({"chunks": ["잘린 답"], "stop_reason": "max_tokens"})
+        r = self.ask(question="Q")
+        self.assertRegex(r.text, tail)
+        self.assertIn("max_tokens", r.text)
+        self.claude.push({"chunks": ["x"], "error": RuntimeError("boom"), "error_at": 1})
+        with self.assertLogs("paper", "ERROR"):
+            r = self.ask(question="Q")
+        self.assertRegex(r.text, tail)
+        self.claude.push({"chunks": ["정상 답"]})
+        self.assertEqual(self.ask(question="Q").text, "정상 답")
+
     def test_unknown_paper_404(self):
         r = self.client.post("/api/ask", json={"arxiv_id": "9999.99999", "question": "Q"})
         self.assertEqual(r.status_code, 404)
@@ -372,8 +390,10 @@ class FeatureAssetTests(CoreTestCase):
         js = self.client.get("/features.js")
         self.assertEqual(js.status_code, 200)
         self.assertIn("text/javascript", js.headers["content-type"])
-        self.assertIn("/* ---- zz.js ---- */\n;(function(){try{\nconst askBtn = 1;", js.text)
-        self.assertIn('catch(e){console.error("[feature] zz.js", e)}})();', js.text)
+        # 파일마다 따로 파싱 (new Function): 한 파일의 문법 오류가 번들 전체를 죽이지 않음
+        self.assertIn('/* ---- zz.js ---- */\ntry{(new Function("const askBtn = 1; window.__zz = askBtn; // 끝 주석\\n'
+                      '//# sourceURL=features/zz.js"))()}catch(e){console.error("[feature] zz.js", e)}', js.text)
+        self.assertTrue(js.text.rstrip().endswith("PaperApp.featuresReady();"), "번들 끝에서 저장된 대화 복원")
         self.assertNotIn("/* ---- zz.sw.js ---- */", js.text, "*.sw.js는 페이지 번들에서 제외")
         self.assertIn("PR_SW", self.client.get("/features.sw.js").text)
         self.assertIn(".zz { color: red; }", self.client.get("/features.css").text)
@@ -385,6 +405,21 @@ class FeatureAssetTests(CoreTestCase):
         self.assertIn(f'<link rel="stylesheet" href="{fa["css"]}">', page)
         home = self.client.get("/").text
         self.assertIn(fa["js"], home, "홈 화면에도 기능 번들 (library, daily-feed 등)")
+
+    def test_syntax_error_in_one_file_does_not_break_others(self):
+        node = __import__("shutil").which("node")
+        if not node:
+            self.skipTest("node가 없음")
+        self.add_feature_file("zz-a.js", "window.__a = '가\u2028나';")
+        self.add_feature_file("zz-b.js", "const x = ;")
+        self.add_feature_file("zz-c.js", '(function () { "use strict"; window.__c = 1; })();')
+        body = self.client.get("/features.js").text
+        harness = ("globalThis.window = globalThis; let ready = 0; window.PaperApp = { featuresReady: () => ready++ };"
+                   "const errs = []; console.error = (n, e) => errs.push(n);\n" + body +
+                   "\nprocess.stdout.write(JSON.stringify([window.__a, window.__c, ready, errs]));")
+        r = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), ["가\u2028나", 1, 1, ["[feature] zz-b.js"]])
 
     def test_etag_and_versioned_immutable(self):
         self.add_feature_file("zz.js", "window.__zz = 2;")
@@ -407,6 +442,10 @@ class TemplateTests(CoreTestCase):
         self.assertIn('data-page="home"', html)
         for name in ("store.js", "ui.js", "anchor.js", "app.js", "render.js", "style.css"):
             self.assertRegex(html, rf"/static/{name}\?v=\w+")
+        # 홈의 library(모든 노트)·vocab도 renderAnswerNow로 Markdown·수식을 그림
+        for lib in ("marked.min.js", "purify.min.js", "katex.min.js", "auto-render.min.js", "katex.min.css"):
+            self.assertIn(lib, html)
+        self.assertLess(html.index("/features.js"), html.index("marked.min.js"))
         self.assertIn('id="home-sections"', html)
         self.assertIn("pr:reading-settings", html, "첫 페인트 전 읽기 설정 스크립트")
 
@@ -416,6 +455,7 @@ class TemplateTests(CoreTestCase):
         self.assertIn(f'data-arxiv-id="{self.paper_id}"', html)
         for frag in ('id="bar-actions"', 'id="bar-more"', 'id="fab-stack"', 'id="back-chip"', 'id="sel-bar"',
                      'id="sheet-pill"', 'id="status-strip"', 'id="sheet-tools"', 'id="presets"', 'id="sr-live"',
+                     'id="top-stack"', 'id="bottom-dock"', 'id="bottom-slots"', 'data-slot="app:status"',
                      'role="dialog"', 'aria-live="polite"', "interactive-widget=resizes-content",
                      "window.PREWARM = fetch", "const ARXIV_ID", 'aria-label="음성으로 질문"'):
             self.assertIn(frag, html)
@@ -462,6 +502,25 @@ class TemplateTests(CoreTestCase):
             self.assertEqual(seen, ["2499.99999"])
         r = self.client.get("/paper/<script>x")
         self.assertNotIn("<script>x", r.text)
+
+    def test_render_page_for_features(self):
+        # entry-routes의 초록 페이지 등: base.html(공용 스크립트·기능 번들) 위에 기능이 만든 본문
+        app2 = FastAPI()
+
+        @app2.get("/abs-test/{aid}")
+        async def page(request: core.Request, aid: str):
+            return core.render_page(request, "초록 <T>", f"<h1>{core.html_escape(aid)}</h1>", arxiv_id=aid)
+        with TestClient(app2) as c:
+            r = c.get("/abs-test/2499.99999")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('data-page="abstract"', r.text)
+        self.assertIn('data-arxiv-id="2499.99999"', r.text)
+        self.assertIn("<title>초록 &lt;T&gt;</title>", r.text)
+        self.assertIn('<main class="pr-page"><h1>2499.99999</h1></main>', r.text)
+        for frag in ("/static/app.js", "/features.js", "/features.css", "marked.min.js"):
+            self.assertIn(frag, r.text)
+        with self.assertRaises(ValueError):
+            core.render_page(None, "t", "", page='x" onload="')
 
     def test_service_worker_and_manifest(self):
         r = self.client.get("/sw.js")
@@ -569,6 +628,17 @@ class SanitizeTests(AsyncCoreTestCase):
                      'src="data:image/png;base64,aaaa"', 'class="keep"', "<math"):
             self.assertIn(good, html)
 
+    def test_non_element_markup_is_removed(self):
+        # html.parser는 <![CDATA[ … ]]>·<!…>·<?…>를 글자 덩어리로 보고 그대로 다시 쓰지만, 브라우저는 HTML 본문에서
+        # 이것을 첫 '>'에서 끝나는 가짜 주석으로 읽음 → 안의 <img onerror>가 살아남 (저장된 XSS)
+        for payload in ('<![CDATA[ x><img src=x onerror=alert(1)> ]]>', '<!ELEMENT x <img src=x onerror=alert(2)>>',
+                        '<?php x <img src=x onerror=alert(3)> ?>', '<!DOCTYPE x <img src=x onerror=alert(4)>>',
+                        '<!-- c --><svg><![CDATA[ <img src=x onerror=alert(5)> ]]></svg>'):
+            html = core.clean_article(f'<article class="ltx_document"><p>a{payload}b</p></article>',
+                                      "https://arxiv.org/html/2401.00009")["html"]
+            for bad in ("onerror", "CDATA", "<!", "<?"):
+                self.assertNotIn(bad, html, payload)
+
     def test_fixture_unchanged_by_sanitizer(self):
         # 정상 LaTeXML 출력은 링크·그림·수식이 그대로
         raw = core.BeautifulSoup(fixture("sample_ltx.html"), "html.parser").find("article")
@@ -583,12 +653,14 @@ class SanitizeTests(AsyncCoreTestCase):
         core.papers.pop(aid, None)
         self.addCleanup(core.papers.pop, aid, None)
         old = {"title": "Old title", "html": '<article class="ltx_document"><a href="javascript:alert(1)">a</a>'
-                                              '<img src="https://arxiv.org/html/2401.00009/x1.png" onerror="alert(1)"></article>',
-               "text": "a"}
+                                              '<img src="https://arxiv.org/html/2401.00009/x1.png" onerror="alert(1)">'
+                                              '<p><![CDATA[ x><img src=x onerror=alert(2)> ]]></p></article>',
+               "text": "a", "v": 2}  # v2 규칙으로 저장된 논문 (CDATA가 남아 있음)
         core.write_json(core.paper_path(aid), old)
         paper = await core.get_paper(aid)
         self.assertNotIn("javascript", paper["html"])
         self.assertNotIn("onerror", paper["html"])
+        self.assertNotIn("CDATA", paper["html"])
         self.assertIn('src="https://arxiv.org/html/2401.00009/x1.png"', paper["html"])
         self.assertEqual(paper["title"], "Old title")
         self.assertEqual(paper["v"], core.CLEAN_VERSION)
