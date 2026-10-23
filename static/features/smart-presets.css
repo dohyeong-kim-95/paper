@@ -1,0 +1,41 @@
+/* smart-presets: 시트 위 스타일 줄(길이·수준·⚙), 설정·내 프리셋 peek, 사전 카드, 번역 쌍, 문장 선택 모드 */
+.sp-style { flex: 1 1 100%; display: flex; gap: 6px; align-items: center; overflow-x: auto; scrollbar-width: none; padding: 2px 0; }
+.sp-style::-webkit-scrollbar { display: none; }
+.sp-seg { flex: none; display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; background: var(--bg); }
+.sp-seg button { border: 0; background: none; color: var(--muted); font-size: 13px; padding: 4px 9px; white-space: nowrap; }
+.sp-seg button + button { border-left: 1px solid var(--line); }
+.sp-seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.sp-gear { flex: none; display: inline-flex; gap: 4px; align-items: center; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--bg); color: var(--fg); font-size: 13px; padding: 4px 9px; white-space: nowrap; }
+.sp-gear-x { color: var(--accent); font-size: 12px; }
+
+/* 설정·편집 peek */
+.sp-form { display: flex; flex-direction: column; gap: 14px; }
+.sp-field { display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.sp-field > span { font-weight: 600; }
+.sp-field small, .sp-hint, .sp-empty { color: var(--muted); font-size: 12px; }
+.sp-input { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid var(--muted); border-radius: 10px;
+  background: var(--bg); color: var(--fg); font: inherit; font-size: 16px; }
+textarea.sp-input { resize: vertical; min-height: 5.5em; }
+.sp-field .sp-seg { align-self: flex-start; max-width: 100%; overflow-x: auto; }
+.sp-check { display: flex; gap: 8px; align-items: center; font-size: 14px; }
+.sp-check input { width: 20px; height: 20px; flex: none; }
+.sp-vars { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.sp-vars button, .sp-custom-label { padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg);
+  color: var(--fg); font-size: 13px; }
+.sp-custom-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.sp-custom { display: inline-flex; align-items: center; gap: 2px; }
+.sp-x { border: 0; background: none; color: var(--muted); font-size: 15px; padding: 4px 6px; }
+
+/* '뜻 (이 논문에서)' 답변: 사전 카드 */
+.answer .turn.sp-card > .a { padding: 8px 12px; border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border-radius: 10px; background: var(--bg); }
+
+/* 저장된 번역 쌍 (section-translate 캐시) */
+.sp-pair { margin: 0 0 10px; }
+.sp-pair p { margin: 0; }
+.sp-ko { font-size: 16px; }
+.sp-en { margin-top: 2px; color: var(--muted); font-size: 13px; }
+
+/* 문장 선택 모드: 두 번 탭 확대 방지 (두 번 탭 = 문단 선택), iOS가 본문 탭에도 click을 보내도록 pointer */
+body.sp-sentence-on #paper { touch-action: manipulation; -webkit-tap-highlight-color: transparent; cursor: pointer; }
