@@ -1,0 +1,74 @@
+/* figure-viewer: 전체화면 뷰어(z 30) · 그림 고정 창(z 15) · 그림·표 모아보기 격자 */
+#paper figure img { cursor: zoom-in; }
+
+/* 뷰어: 화면 전체, 페이지 확대·스크롤로 새지 않게 touch-action: none (캡션만 세로 스크롤) */
+.fv-viewer { position: fixed; inset: 0; z-index: var(--z-viewer); display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  background: #0b0b0b; color: #f2f2f2; touch-action: none; overscroll-behavior: contain; }
+.fv-viewer:focus { outline: none; }
+.fv-viewer [hidden] { display: none !important; }
+.fv-top { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 8px; }
+.fv-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; padding: 0 4px; }
+.fv-top button, .fv-nav { min-width: 44px; min-height: 44px; padding: 0 10px; border: 0; border-radius: 10px;
+  background: rgba(255, 255, 255, .12); color: #fff; font-size: 20px; line-height: 1; }
+.fv-top .fv-fit { font-size: 14px; }
+.fv-top button:disabled { opacity: .35; }
+.fv-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: none; cursor: zoom-in; }
+.fv-stage.fv-zoomed { cursor: grab; }
+/* 내용은 원래 크기로 놓고 transform으로 맞춤·확대 (기준점 왼쪽 위). 투명 PNG가 검은 배경에 묻히지 않게 흰 바탕 */
+.fv-content { position: absolute; left: 0; top: 0; transform-origin: 0 0; background: #fff; color: #1a1a1a; }
+.fv-content.fv-anim { transition: transform .2s ease; }
+.fv-content > * { animation: fv-in .18s ease-out; }
+@keyframes fv-in { from { opacity: 0; } to { opacity: 1; } }
+.fv-content img { display: block; width: 100%; height: 100%; -webkit-user-drag: none; pointer-events: none; }
+.fv-content.fv-clone { padding: 8px; font-size: 15px; line-height: 1.4; }
+.fv-clone, .fv-clone * { pointer-events: none; }
+.fv-clone figure { margin: 0; }
+.fv-clone table { border-collapse: collapse; }
+.fv-clone td, .fv-clone th { padding: 2px 8px; }
+.fv-clone svg { max-width: none; }
+.fv-nav { position: absolute; top: 50%; transform: translateY(-50%); min-width: 36px; min-height: 64px; padding: 0 6px;
+  background: rgba(0, 0, 0, .32); font-size: 26px; }
+.fv-prev { left: 6px; }
+.fv-next { right: 6px; }
+/* 캡션: 길면 스크롤 (여기만 손가락 세로 스크롤 허용) */
+.fv-cap { flex: none; max-height: 25vh; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y;
+  padding: 6px 16px 0; font-size: 14px; line-height: 1.5; color: #d6d6d6; -webkit-user-select: text; user-select: text; }
+.fv-cap figcaption + figcaption { margin-top: 4px; }
+.fv-cap a { color: #93c5fd; }
+.fv-actions { flex: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px 10px; }
+.fv-actions button, .fv-actions a { display: inline-flex; align-items: center; min-height: 40px; padding: 6px 14px;
+  border: 1px solid rgba(255, 255, 255, .25); border-radius: 999px; background: rgba(255, 255, 255, .08); color: #fff;
+  font-size: 14px; text-decoration: none; }
+.fv-actions .fv-ai { background: var(--accent); border-color: var(--accent); }
+@media (max-height: 500px) { .fv-cap { max-height: 15vh; } .fv-top { padding: 2px 8px; } .fv-actions { padding: 4px 12px; } }
+
+/* 그림 고정 창: 본문 위에 떠 있음 (z 15 = 질문 시트(20) 아래), 끌어서 옮김 */
+.fv-pin { position: fixed; left: 0; top: 0; z-index: var(--z-pin); width: min(40vw, 320px); min-width: 140px; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .3); touch-action: none; cursor: grab; }
+.fv-pin.fv-dragging { cursor: grabbing; opacity: .85; }
+.fv-pin-head { display: flex; align-items: center; gap: 4px; padding: 0 0 0 8px; background: var(--card); font-size: 12px; }
+.fv-pin-head span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fv-pin-x { min-width: 36px; min-height: 32px; border: 0; background: none; color: var(--fg); font-size: 16px; }
+.fv-pin-body { max-height: 40vh; overflow: hidden; background: #fff; color: #1a1a1a; }
+.fv-pin-body:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.fv-pin-body img { display: block; width: 100%; height: auto; pointer-events: none; -webkit-user-drag: none; }
+.fv-pin-clone { width: max-content; padding: 4px; transform-origin: 0 0; font-size: 14px; line-height: 1.4; pointer-events: none; }
+.fv-pin-clone figure { margin: 0; }
+
+/* 모아보기 격자 */
+.fv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; padding: 4px 0 8px; }
+.fv-tile { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 6px; border: 1px solid var(--line);
+  border-radius: 10px; background: var(--bg); color: var(--fg); text-align: left; font-size: 13px; }
+.fv-tile[aria-current="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.fv-tile b { font-size: 13px; }
+.fv-thumb { display: flex; gap: 2px; align-items: center; justify-content: center; height: 96px; overflow: hidden;
+  border-radius: 6px; background: #fff; }
+.fv-thumb img { min-width: 0; max-width: 100%; max-height: 100%; flex: 1 1 0; object-fit: contain; }
+.fv-mini { align-self: flex-start; width: 100%; max-height: 100%; overflow: hidden; color: #1a1a1a; font-size: 5px;
+  line-height: 1.15; pointer-events: none; }
+.fv-mini figure { margin: 0; }
+.fv-mini svg { display: block; width: 100%; height: auto; max-height: 90px; }
+.fv-mini table { border-collapse: collapse; }
+.fv-tile-cap { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; color: var(--muted); font-size: 12px; line-height: 1.35; }
