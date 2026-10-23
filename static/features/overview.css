@@ -1,0 +1,49 @@
+/* overview: 제목·저자 아래 메타 칩 줄 + '한눈에 보기' 카드 (본문 안 .pr-ui) */
+.ov { margin: 12px 0 18px; font-size: 15px; line-height: 1.6; color: var(--fg); }
+.ov-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.ov-meta:empty { display: none; }
+.ov-mchip { display: inline-block; max-width: 100%; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--bg); color: var(--fg); font-size: 13px; line-height: 1.4; text-decoration: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+a.ov-mchip { color: var(--accent); }
+.ov-info { color: var(--muted); }
+
+.ov-card { border: 1px solid var(--line); border-radius: 12px; background: var(--card); overflow: hidden; }
+.ov-toggle { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px;
+  border: 0; background: none; color: var(--fg); font-weight: 600; text-align: left; }
+.ov-caret { color: var(--muted); transition: transform .15s ease; }
+.ov-card.open .ov-caret { transform: rotate(90deg); }
+.ov-teaser { margin: -6px 14px 12px; color: var(--muted); font-size: 14px; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.ov-teaser[hidden], .ov-body[hidden], .ov-method[hidden] { display: none; }
+.ov-body { padding: 0 14px 12px; }
+
+/* 생성된 글: 복사할 수 있게 선택 허용 */
+.ov-text { overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+.ov-text > :first-child { margin-top: 0; }
+.ov-text h1, .ov-text h2 { font-size: 1.05em; margin: 16px 0 6px; }
+.ov-text h3 { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 1em; margin: 14px 0 4px; }
+.ov-text p { margin: 4px 0; }
+.ov-text ul, .ov-text ol { margin: 4px 0; padding-left: 1.3em; }
+.ov-text table { font-size: 14px; border-collapse: collapse; }
+.ov-text th, .ov-text td { padding: 4px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.ov-text th:first-child, .ov-text td:first-child { white-space: nowrap; color: var(--muted); }
+.ov-text .katex-display { overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+.ov-text code { font: .88em ui-monospace, Menlo, monospace; background: var(--bg); padding: .1em .3em; border-radius: 4px; }
+
+.ov-chip, .ov-ask, .ov-btn { padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg);
+  color: var(--accent); font-size: 13px; font-weight: 400; line-height: 1.5; }
+.ov-chip { margin: 2px 0; }
+.ov-ask { flex: none; }
+.ov-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.ov-foot .pr-feedback { margin-left: auto; }
+.ov-method { margin-top: 14px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.ov-method-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ov-loading { color: var(--muted); }
+.ov-error { color: #dc2626; }
+
+/* [[fig:id]] 자리에 넣은 본문 그림 복제 (탭: 크게 보기 또는 그 자리로) */
+.ov-fig { margin: 8px 0; padding: 8px; border-radius: 8px; background: var(--bg); cursor: zoom-in; }
+.ov-fig img, .ov-fig svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.ov-fig .ov-figcaption { margin-top: 4px; font-size: 12px; color: var(--muted); }
+.ov-fig .ltx_flex_figure { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
