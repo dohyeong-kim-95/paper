@@ -1,0 +1,13 @@
+/* figure-explain: 그림·표 오른쪽 위 'AI 설명' 칩. 그림 위에 자리를 비워 두어 범례·캡션을 가리지 않음 */
+#paper figure.fe-has { position: relative; padding-top: 40px; }
+.fe-chips { position: absolute; top: 2px; left: 0; right: 0; display: flex; gap: 6px; padding: 0 2px;
+  overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.fe-chips::-webkit-scrollbar { display: none; }
+/* 오른쪽 정렬은 margin-left: auto로 (justify-content: flex-end면 넘칠 때 앞쪽 칩으로 스크롤이 안 됨) */
+.fe-chips > :first-child { margin-left: auto; }
+.fe-chip { flex: none; min-height: 32px; padding: 4px 12px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--card); color: var(--accent); font-size: 13px; line-height: 1.3; font-weight: 600; cursor: pointer;
+  -webkit-tap-highlight-color: transparent; }
+.fe-chip.fe-panel { min-width: 40px; padding: 4px 8px; color: var(--fg); font-weight: 400; }
+.fe-chip:active { opacity: .7; }
+.fe-chip[aria-busy="true"] { opacity: .5; cursor: progress; }
