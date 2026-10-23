@@ -409,7 +409,7 @@ async def paper_index(arxiv_id: str) -> dict:
     """build_index 메모. 반환값은 공유 객체이므로 수정 금지"""
     if arxiv_id not in _indexes:
         soup = await paper_soup(arxiv_id)
-        _indexes[arxiv_id] = await asyncio.to_thread(build_index, soup)
+        _indexes[arxiv_id] = await singleflight(("index", arxiv_id), lambda: asyncio.to_thread(build_index, soup))
     return _indexes[arxiv_id]
 
 

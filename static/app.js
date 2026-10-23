@@ -260,6 +260,8 @@
     presetsEl.replaceChildren(...list.map(p => h("button", {
       type: "button", text: p.label, dataset: { id: p.id },
       onclick: () => {
+        // run(session)이 있으면 질문 대신 실행 (예: 섹션 퀴즈 peek 열기)
+        if (typeof p.run === "function") { try { p.run(s); } catch (e) { err(e); } return; }
         let q = p.q || p.label;
         try { if (typeof q === "function") q = q(s.selInfo, s); } catch (e) { err(e); return; }
         ask(q, { label: p.label, presetId: p.id });
