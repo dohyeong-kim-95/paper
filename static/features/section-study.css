@@ -1,0 +1,43 @@
+/* section-study: 섹션 제목 아래 요약·퀴즈 칩 줄 + 요약 상자, 퀴즈 peek */
+.ss-head { margin: -0.3em 0 0.9em; font-size: 14px; line-height: 1.55; }
+.ss-head[hidden], .ss-chip[hidden] { display: none; }
+.ss-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ss-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 12px; border: 1px solid var(--line);
+  border-radius: 999px; background: var(--card); color: var(--muted); font: inherit; font-size: 13px; }
+.ss-chip[aria-expanded]::after { content: "▾"; font-size: 11px; transition: transform .15s ease; }
+.ss-chip[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+.ss-chip[aria-expanded="true"]::after { transform: rotate(180deg); }
+.ss-box { margin-top: 8px; padding: 10px 12px; border-left: 3px solid var(--accent); border-radius: 0 10px 10px 0;
+  background: var(--card); color: var(--fg); }
+/* 요약 글은 복사할 수 있게 (.pr-ui는 기본 선택 불가) */
+.ss-gist { -webkit-user-select: text; user-select: text; }
+.ss-gist p, .ss-why p { margin: 0 0 0.4em; }
+.ss-gist p:last-child, .ss-why p:last-child, .ss-qtext p { margin-bottom: 0; }
+.ss-note { margin: 0; color: var(--muted); }
+.ss-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.ss-btn { padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--fg);
+  font: inherit; font-size: 13px; }
+.ss-btn.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+
+/* 퀴즈 */
+.ss-quiz { font-size: 15px; line-height: 1.5; }
+.ss-progress { color: var(--muted); font-size: 13px; }
+.ss-qtext { margin: 4px 0 12px; font-weight: 600; }
+.ss-qtext p { margin: 0; }
+.ss-choices { display: flex; flex-direction: column; gap: 8px; }
+.ss-choice { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--bg); color: var(--fg); font: inherit; text-align: left; }
+.ss-choice:disabled { opacity: 1; color: var(--fg); }
+.ss-choice.ss-right { border-color: #16a34a; background: rgba(22, 163, 74, .14); }
+.ss-choice.ss-wrong { border-color: #dc2626; background: rgba(220, 38, 38, .12); }
+.ss-cnum { flex: none; color: var(--muted); }
+.ss-ctext p { display: inline; margin: 0; }
+.ss-reveal { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.ss-ok { color: #16a34a; }
+.ss-no { color: #dc2626; }
+.ss-why { margin-top: 4px; }
+.ss-score { margin: 4px 0 8px; font-weight: 600; }
+.ss-review { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.ss-review-item { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 6px 4px; border: 0; background: none;
+  color: var(--fg); font: inherit; font-size: 14px; text-align: left; }
+.ss-review-item > span:first-child { flex: none; font-weight: 700; }
