@@ -1,0 +1,37 @@
+/* related-papers: 관련 논문 패널 · 관련 연구 peek (rel-) */
+.rel-body { word-break: keep-all; } /* 한국어는 어절 단위로 줄바꿈 (긴 영어 단어는 peek의 overflow-wrap이 처리) */
+.rel-tabs { display: flex; gap: 6px; overflow-x: auto; margin: 2px 0 6px; padding-bottom: 2px; scrollbar-width: none; }
+.rel-tabs::-webkit-scrollbar { display: none; }
+.rel-tab { flex: none; min-height: 34px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--bg); color: var(--fg); font-size: 14px; }
+.rel-tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.rel-note { margin: 4px 0 6px; font-size: 13px; line-height: 1.45; color: var(--muted); }
+.rel-list { list-style: none; margin: 0; padding: 0; }
+.rel-item { padding: 10px 0; border-top: 1px solid var(--line); }
+.rel-title { font-weight: 600; line-height: 1.4; }
+.rel-badge { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; background: var(--bg);
+  color: var(--accent); font-size: 12px; font-weight: 500; vertical-align: 1px; }
+.rel-meta { margin-top: 2px; font-size: 13px; color: var(--muted); }
+.rel-abs { margin: 4px 0 0; font-size: 14px; line-height: 1.5; }
+.rel-more { border: 0; background: none; color: var(--accent); padding: 0 2px; font-size: 13px; }
+.rel-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.rel-actions a, .rel-actions button, .rel-foot a, .rel-msg button { display: inline-flex; align-items: center; min-height: 32px;
+  padding: 4px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--fg);
+  font-size: 13px; text-decoration: none; }
+.rel-actions .rel-open { background: var(--accent); border-color: var(--accent); color: #fff; }
+.rel-actions button:disabled { color: var(--accent); opacity: 1; }
+.rel-msg { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 14px 0; font-size: 14px; color: var(--muted); }
+.rel-foot { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--line); }
+.rel-quote { margin: 0 0 8px; padding: 4px 10px; border-left: 3px solid var(--accent); color: var(--muted); font-size: 14px;
+  line-height: 1.5; }
+.rel-terms { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0 4px; }
+.rel-terms:empty { display: none; }
+.rel-terms-label { font-size: 12px; color: var(--muted); }
+.rel-ext { margin: 2px 0 6px; font-size: 13px; }
+.rel-ext a { text-decoration: none; }
+.rel-term { min-height: 32px; padding: 4px 12px; border: 1px solid var(--accent); border-radius: 999px; background: var(--bg);
+  color: var(--accent); font-size: 13px; }
+.rel-term[aria-pressed="false"] { border-color: var(--line); color: var(--muted); text-decoration: line-through; }
+.rel-skel { height: 58px; margin: 8px 0; border-radius: 10px; background: var(--bg); animation: rel-pulse 1.2s ease-in-out infinite alternate; }
+@keyframes rel-pulse { from { opacity: .45; } to { opacity: .9; } }
+@media (prefers-reduced-motion: reduce) { .rel-skel { animation: none; } }
