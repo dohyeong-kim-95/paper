@@ -3,6 +3,7 @@
 모바일에서 arXiv 논문을 읽다가 문장을 선택해 바로 질문하는 PWA (MVP).
 
 - 본문: arXiv 공식 HTML (`arxiv.org/html/<id>`)
+- 공식 HTML이 없으면 ar5iv(`ar5iv.labs.arxiv.org/html/<id>`)로 대체, 받은 논문은 `cache/`에 JSON으로 저장
 - 질문: Claude Haiku 5.5, 스트리밍 응답 + 논문 본문 프롬프트 캐싱 (논문을 열 때 미리 캐시)
 
 ## 실행
