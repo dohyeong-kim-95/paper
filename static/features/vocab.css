@@ -1,0 +1,33 @@
+/* vocab: 단어장 — 답변 아래 '단어장에 추가', 홈의 복습 카드·전체 목록 (vo-) */
+.turn-tools .vo-add.vo-done { border-color: var(--accent); color: var(--accent); opacity: 1; }
+
+/* 홈 (style.css의 .home button보다 구체적으로) */
+.vo-box { display: flex; flex-direction: column; gap: 10px; }
+.vo-card { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px 16px; border-radius: 14px; background: var(--card); }
+.vo-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); }
+.vo-term { font-size: 1.45em; font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; }
+.vo-meaning { font-size: 15px; line-height: 1.55; overflow-wrap: break-word; }
+.vo-meaning p { margin: 0 0 4px; }
+.vo-meaning ol, .vo-meaning ul { margin: 0 0 4px; padding-left: 1.3em; }
+.vo-hint { color: var(--muted); font-size: 14px; }
+.vo-sentence { margin: 0; padding-left: 10px; border-left: 3px solid var(--line); font-size: 14px; line-height: 1.5;
+  color: var(--muted); overflow-wrap: break-word; }
+.vo-sentence b { color: var(--fg); }
+.vo-src { align-self: flex-start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.vo-actions { display: flex; gap: 8px; }
+.vo-home .vo-btn { flex: 1; min-height: 44px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg); color: var(--fg); font-size: 15px; }
+.vo-home .vo-reveal { border-color: var(--accent); color: var(--accent); }
+.vo-home .vo-got { border-color: var(--accent); background: var(--accent); color: #fff; }
+.vo-btn small { margin-left: 2px; font-size: 12px; opacity: .75; }
+.vo-empty, .vo-done-msg { margin: 0; font-size: 14px; color: var(--muted); }
+.vo-done-msg:focus { outline: none; }
+.vo-home .vo-link { align-self: flex-start; padding: 4px 0; border: 0; border-radius: 0; background: none; color: var(--accent); font-size: 14px; }
+.vo-all { display: flex; flex-direction: column; gap: 6px; }
+.vo-list { margin: 0; padding: 0; list-style: none; }
+.vo-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.vo-row-main { flex: 1; min-width: 0; }
+.vo-row-term { display: block; font-weight: 600; color: var(--fg); text-decoration: none; overflow-wrap: anywhere; }
+.vo-row-sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vo-home .vo-del { flex: none; width: 40px; height: 40px; padding: 0; border: 0; border-radius: 50%; background: none;
+  color: var(--muted); font-size: 16px; }
