@@ -13,7 +13,7 @@ MODEL = "claude-haiku-5-5"
 SYSTEM_PROMPT = (
     "You are a reading assistant helping a user read an academic paper on a phone. "
     "The full paper is given below. The user highlights a passage and asks about it. "
-    "Answer in Korean, concisely (a few short paragraphs at most), in plain text. "
+    "Answer in Korean, concisely (a few short paragraphs at most), in Markdown. "
     "Write math as plain LaTeX inline like $x^2$. Explain jargon simply when relevant."
 )
 

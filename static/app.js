@@ -48,9 +48,11 @@ async function ask(question) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   answer.textContent = "";
+  let raw = "";
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    answer.textContent += decoder.decode(value, { stream: true });
+    raw += decoder.decode(value, { stream: true });
+    window.renderAnswer ? renderAnswer(answer, raw) : (answer.textContent = raw);
   }
 }
