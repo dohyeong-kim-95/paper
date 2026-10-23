@@ -1,0 +1,88 @@
+/* reading-settings: 설정 peek, 테마 보정(그림 바탕·저자 색), 긴 수식·표 넘침, 문단 집중, 넓은 화면 번역 두 칸 (접두사 rs-) */
+
+/* ---------- 설정 peek: 바꾸는 동안 뒤 본문이 그대로 보이게 (어둡게 덮지 않음) ---------- */
+.pr-peek-backdrop:has(+ .rs-peek) { background: transparent; }
+.rs-probe .pr-peek-backdrop { pointer-events: none; } /* 글자 크기를 바꿀 때 읽던 줄 찾기 (JS가 잠깐 붙임) */
+.rs-panel { display: flex; flex-direction: column; gap: 14px; padding: 2px 0 4px; font-size: 15px; word-break: keep-all; overflow-wrap: anywhere; }
+.rs-row { display: flex; flex-direction: column; gap: 6px; }
+.rs-label { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--muted); }
+.rs-label output { color: var(--fg); font-variant-numeric: tabular-nums; }
+.rs-slider { display: flex; align-items: center; gap: 10px; }
+.rs-slider input { flex: 1; min-width: 0; min-height: 32px; margin: 0; accent-color: var(--accent); }
+.rs-slider > span { flex: none; min-width: 1.2em; text-align: center; color: var(--muted); line-height: 1; }
+.rs-row:first-child .rs-end-lo { font-size: 12px; }
+.rs-row:first-child .rs-end-hi { font-size: 20px; }
+.rs-seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.rs-seg button { flex: 1 1 auto; min-width: 64px; min-height: 40px; white-space: nowrap; display: inline-flex; gap: 6px; align-items: center;
+  justify-content: center; padding: 6px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+  color: var(--fg); font-size: 14px; }
+.rs-seg button[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); color: var(--accent); font-weight: 600; }
+.rs-swatch { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 1px solid rgba(128, 128, 128, .5); }
+/* 테마 단추는 색 동그라미 위·이름 아래 → 320px에서도 네 개가 한 줄 */
+.rs-seg-theme button { flex-direction: column; gap: 4px; min-width: 0; padding: 8px 4px; font-size: 13px; }
+.rs-sw-system { background: linear-gradient(135deg, #fff 50%, #121212 50%); }
+.rs-sw-light { background: #fff; }
+.rs-sw-dark { background: #121212; }
+.rs-sw-sepia { background: #f4ecd8; }
+.rs-serif { font-family: "Iowan Old Style", "Noto Serif KR", Georgia, serif; }
+.rs-toggles { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.rs-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; padding: 6px 0;
+  border-bottom: 1px solid var(--line); font-size: 15px; }
+.rs-toggle > span { min-width: 0; }
+.rs-toggle small { display: block; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.rs-toggle input { flex: none; width: 22px; height: 22px; margin: 0; accent-color: var(--accent); }
+.rs-toggle:has(input:disabled) { opacity: .6; }
+.rs-reset { align-self: flex-start; padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg);
+  color: var(--fg); font-size: 14px; }
+
+/* 글자 크기 설정을 답변·peek 글자에도 (기본 17px이면 원래 크기 16px·15px 그대로) */
+#sheet .answer { font-size: calc(var(--fs, 17px) * .94); }
+.pr-peek-body { font-size: calc(var(--fs, 17px) * .88); }
+
+/* 양쪽 정렬: 사파리는 접두사가 있어야 하이픈 */
+:root[data-justify="1"] .paper .ltx_p { -webkit-hyphens: auto; }
+
+/* ---------- 다크·세피아: 그림은 뒤집지 않고 밝은 바탕을 깔아 줌 (투명 PNG·TikZ SVG의 검은 선이 보이게) ---------- */
+:root[data-theme="dark"] #paper :is(img, svg.ltx_picture),
+:root[data-theme="sepia"] #paper :is(img, svg.ltx_picture) { background: #fff; border-radius: 4px; }
+:root[data-theme="dark"] #paper img { filter: brightness(.9); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="sepia"]) #paper :is(img, svg.ltx_picture) { background: #fff; border-radius: 4px; }
+  :root:not([data-theme="light"]):not([data-theme="sepia"]) #paper img { filter: brightness(.9); }
+}
+
+/* 저자 색: 새 LaTeXML은 변수로 냄 (style="--ltx-fg-color:…") → 실제 색으로. 다크·세피아에서 안 읽히는 색은 JS가 고친 색(--rs-fg) */
+#paper [style*="--ltx-fg-color"] { color: var(--ltx-fg-color); }
+#paper [style*="--ltx-bg-color"] { background-color: var(--ltx-bg-color); }
+#paper .rs-recolor { color: var(--rs-fg) !important; }
+
+/* ---------- 긴 수식·표: 블록 안에서만 가로 스크롤, 넘칠 때(rs-ovf) 가장자리를 흐려 '더 있음' 표시 ---------- */
+#paper figure.ltx_table, #paper .ltx_listing, #paper pre { max-width: 100%; overflow-x: auto; }
+#paper :is(.ltx_minipage, .ltx_inline-block)[style*="width"] { max-width: 100%; }
+#paper .rs-wide-math { display: block; max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+#paper .rs-ovf { overscroll-behavior-x: contain; /* 끝까지 밀어도 브라우저 뒤로가기 제스처로 안 넘어감 */
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+#paper .rs-ovf.rs-mid {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
+#paper .rs-ovf.rs-end {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 28px);
+  mask-image: linear-gradient(to right, transparent, #000 28px); }
+/* 마지막 안전망: 그래도 넘치는 것(변환된 표 등)이 페이지 전체를 가로로 밀지 않게 (WCAG 1.4.10, 320px) */
+#paper { overflow-x: clip; }
+
+/* ---------- 문단 집중: 읽기 선에 걸친 블록(rs-cur)만 또렷하게. 단위 목록은 JS의 UNIT과 같게 ---------- */
+#paper.rs-focus :is(.ltx_para, .ltx_abstract > .ltx_p, .ltx_title, figure, .ltx_float, .ltx_theorem, .ltx_proof, .ltx_bibitem, .ltx_authors):not(.rs-cur):not(:is(.ltx_para, .ltx_abstract > .ltx_p, .ltx_title, figure, .ltx_float, .ltx_theorem, .ltx_proof, .ltx_bibitem, .ltx_authors) *) {
+  opacity: .35; transition: opacity .25s ease; }
+#paper.rs-focus .rs-cur { opacity: 1; transition: opacity .25s ease; }
+
+/* ---------- 넓은 화면(가로 1000px+, 시트 닫힘) + 번역 '둘다'(html.rs-tr-both): 원문·번역을 문단별로 나란히 ---------- */
+@media (min-width: 1000px) and (orientation: landscape) {
+  .rs-tr-both body:not(.pr-sheet-open) #paper:has(.tr-ko) { max-width: 1240px; }
+  .rs-tr-both body:not(.pr-sheet-open) #paper :is(.ltx_para, .ltx_abstract):has(> .ltx_p + .tr-ko):not(:has(> .tr-hide)) {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 28px; align-items: start; }
+  .rs-tr-both body:not(.pr-sheet-open) #paper :is(.ltx_para, .ltx_abstract):has(> .ltx_p + .tr-ko):not(:has(> .tr-hide)) > * { grid-column: 1 / -1; }
+  .rs-tr-both body:not(.pr-sheet-open) #paper :is(.ltx_para, .ltx_abstract):has(> .ltx_p + .tr-ko):not(:has(> .tr-hide)) > .ltx_p { grid-column: 1; margin-top: 0; }
+  .rs-tr-both body:not(.pr-sheet-open) #paper :is(.ltx_para, .ltx_abstract):has(> .ltx_p + .tr-ko):not(:has(> .tr-hide)) > .tr-ko { grid-column: 2; margin-top: 0; }
+}
