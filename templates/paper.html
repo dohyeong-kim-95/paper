@@ -23,6 +23,12 @@
   const ARXIV_ID = {{ arxiv_id | tojson }};
   fetch(`/api/prewarm/${ARXIV_ID}`, { method: "POST" });
 </script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script defer src="/static/render.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/voice.js"></script>
 {% endblock %}

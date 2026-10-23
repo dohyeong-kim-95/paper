@@ -44,9 +44,9 @@ document.getElementById("ask-form").addEventListener("submit", e => {
   qInput.value = "";
 });
 
-// 답변 표시 (나중에 마크다운 렌더링으로 교체할 지점)
+// 답변 표시: 마크다운+수식 렌더링 (render.js 로드 실패 시 일반 텍스트)
 function setAnswerText(el, text) {
-  el.textContent = text;
+  window.renderAnswer ? renderAnswer(el, text) : (el.textContent = text);
 }
 
 // 질문 말풍선 + 답변 칸을 추가하고 답변 칸을 반환

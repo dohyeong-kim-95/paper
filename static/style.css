@@ -44,7 +44,15 @@ button, input { font: inherit; }
 #ask-form input { flex: 1; padding: 10px; border: 1px solid var(--muted); border-radius: 10px;
   background: var(--bg); color: var(--fg); }
 #ask-form button { padding: 0 14px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; }
-.answer { white-space: pre-wrap; font-size: 16px; }
+.answer { font-size: 16px; overflow-wrap: break-word; }
+.answer .a > :first-child { margin-top: 0; }
+.answer p, .answer ul, .answer ol { margin: 0.5em 0; }
+.answer ul, .answer ol { padding-left: 1.4em; }
+.answer h1, .answer h2, .answer h3 { font-size: 1.05em; margin: 0.8em 0 0.3em; }
+.answer code { font: 0.88em ui-monospace, Menlo, monospace; background: var(--bg); padding: 0.1em 0.3em; border-radius: 4px; }
+.answer pre { overflow-x: auto; padding: 8px 10px; background: var(--bg); border-radius: 8px; }
+.answer pre code { padding: 0; background: none; }
+.answer .katex-display { overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
 
 /* 음성 입력 중 */
 #ask-form #mic.recording { background: #dc2626; animation: pulse 1s ease-in-out infinite alternate; }
