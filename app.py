@@ -1,4 +1,6 @@
+import json
 import re
+from pathlib import Path
 
 import anthropic
 import httpx
@@ -24,6 +26,9 @@ client = anthropic.AsyncAnthropic()  # ANTHROPIC_API_KEY 환경변수 사용
 http = httpx.AsyncClient(follow_redirects=True, timeout=30)
 
 papers: dict[str, dict] = {}  # arxiv_id -> {"title", "html", "text"}
+CACHE_DIR = Path("cache")  # 정리된 논문을 JSON으로 디스크에 저장
+# arXiv HTML이 없으면 ar5iv(같은 LaTeXML 출력)로 대체
+SOURCES = ["https://arxiv.org/html/{}", "https://ar5iv.labs.arxiv.org/html/{}"]
 
 
 def parse_arxiv_id(s: str) -> str | None:
@@ -40,7 +45,7 @@ def clean_article(raw: str, base_url: str) -> dict:
     base_tag = soup.find("base", href=True)
     base_url = str(httpx.URL(base_url).join(base_tag["href"])) if base_tag else base_url.rstrip("/") + "/"
 
-    for el in article.select("script, style, .ltx_page_footer, .ltx_role_footnote button"):
+    for el in article.select("script, style, .ltx_page_footer, .ar5iv-footer, .ltx_role_footnote button"):
         el.decompose()
     # 이미지/링크를 절대경로로
     for img in article.find_all("img"):
@@ -92,14 +97,30 @@ async def prewarm(paper: dict):
         print("prewarm failed:", e)
 
 
+async def fetch_paper(arxiv_id: str) -> dict:
+    for src in SOURCES:
+        try:
+            r = await http.get(src.format(arxiv_id))
+        except httpx.HTTPError:
+            continue
+        if r.status_code == 200 and "ltx_document" in r.text:
+            return clean_article(r.text, str(r.url))
+    raise HTTPException(404, "이 논문은 HTML 버전이 없습니다 (arXiv, ar5iv 모두 실패).")
+
+
 async def get_paper(arxiv_id: str) -> dict:
     if arxiv_id in papers:
         return papers[arxiv_id]
-    r = await http.get(f"https://arxiv.org/html/{arxiv_id}")
-    if r.status_code != 200 or "ltx_document" not in r.text:
-        raise HTTPException(404, "이 논문은 arXiv HTML 버전이 없습니다.")
-    papers[arxiv_id] = clean_article(r.text, str(r.url))
-    return papers[arxiv_id]
+    # 파일명에 쓸 수 없는 문자 제거 (ID 예: 2401.04088v2)
+    path = CACHE_DIR / (re.sub(r"[^\w.-]", "_", arxiv_id) + ".json")
+    try:
+        paper = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):  # 캐시 없음/손상 -> 새로 받기
+        paper = await fetch_paper(arxiv_id)
+        CACHE_DIR.mkdir(exist_ok=True)
+        path.write_text(json.dumps(paper, ensure_ascii=False), encoding="utf-8")
+    papers[arxiv_id] = paper
+    return paper
 
 
 @app.get("/")
