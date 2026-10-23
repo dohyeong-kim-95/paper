@@ -1,0 +1,43 @@
+/* equation-tools: 표시 수식 탭 도구 줄 · 복사 형식 peek · 전체 화면 보기 · 답변 수식 탭 복사 */
+.paper table.ltx_equation, .paper table.ltx_equationgroup { cursor: pointer; border-radius: 8px; -webkit-tap-highlight-color: transparent; }
+.paper .eq-active { background: var(--card); box-shadow: 0 0 0 1px var(--line); }
+
+.eq-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 14px; }
+.eq-row button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--card);
+  color: var(--fg); font-size: 14px; line-height: 1.3; }
+.eq-row button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.eq-row .eq-delim { font: 13px ui-monospace, Menlo, monospace; color: var(--muted); }
+.eq-row .eq-x { margin-left: auto; border: 0; background: none; color: var(--muted); }
+
+.eq-delims { display: flex; flex-direction: column; gap: 6px; }
+.eq-delims button { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 14px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); font-size: 14px; text-align: left; }
+.eq-delims button[aria-checked="true"] { border-color: var(--accent); color: var(--accent); }
+.eq-delims code { font: 14px ui-monospace, Menlo, monospace; }
+.eq-note { margin: 10px 0 0; font-size: 13px; color: var(--muted); }
+
+/* 전체 화면: 화면 높이를 거의 다 쓰는 peek, 수식은 무대(.eq-stage) 안에서 가로·세로 스크롤 */
+.pr-peek.eq-full-peek { display: flex; flex-direction: column; overflow: hidden; max-height: none;
+  height: calc(var(--vvh, 100vh) - env(safe-area-inset-top) - 8px); }
+.eq-full-peek .pr-peek-body { flex: 1; min-height: 0; display: flex; }
+.eq-full { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.eq-full-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.eq-full-tools button { min-width: 40px; min-height: 34px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--bg); color: var(--fg); font-size: 14px; }
+.eq-full-tools button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.eq-stage { flex: 1; min-height: 0; display: flex; overflow: auto; overscroll-behavior: contain; touch-action: pan-x pan-y;
+  padding: 8px; border-radius: 10px; background: var(--bg); -webkit-user-select: text; user-select: text; }
+/* 넘칠 때 margin: auto는 0이 되어 왼쪽이 잘리지 않음. 글자 크기로 배율 (MathML·번호가 함께 커지고 스크롤 크기도 맞음) */
+.pr-peek-body .eq-stage > * { flex: none; display: table; max-width: none; overflow: visible; margin: auto;
+  font-size: calc(var(--eq-s, 1) * 1.15em); }
+.eq-stage .ltx_eqn_cell { padding: 0 .2em; white-space: nowrap; }
+.eq-stage .ltx_tag_equation { color: var(--muted); padding-left: 1em; }
+/* 태블릿 가로에서도 옆 패널 대신 화면 아래 전체 너비 (긴 수식용) */
+@media (min-width: 900px) and (orientation: landscape) {
+  .pr-peek.eq-full-peek { left: 0; right: 0; top: auto; bottom: var(--kb, 0px); width: auto; border-radius: 16px 16px 0 0;
+    height: calc(var(--vvh, 100vh) - env(safe-area-inset-top) - 32px); padding-top: 0; }
+}
+
+/* 답변 속 수식: 탭하면 LaTeX 복사 */
+.answer .katex { cursor: copy; border-radius: 4px; }
+.answer .katex:active { background: var(--bg); }
