@@ -1,0 +1,88 @@
+/* library: 내 서재 (홈) · 상태·태그 peek · 본문 인용 표시 (lib-) */
+
+/* 본문 인용 표시 (CiteSee): ● = 내 서재에 있는 논문, 배경 진하기 = 내가 읽은 다른 논문 몇 편이 인용했는지 */
+#paper a.ltx_ref.lib-cite-seen::after { content: ""; display: inline-block; width: .38em; height: .38em; margin-left: .12em;
+  border-radius: 50%; background: var(--accent); vertical-align: super; }
+#paper a.ltx_ref.lib-cf1, #paper a.ltx_ref.lib-cf2, #paper a.ltx_ref.lib-cf3 { border-radius: 3px; padding: 0 1px; }
+#paper a.ltx_ref.lib-cf1 { background: rgba(37, 99, 235, .10); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+#paper a.ltx_ref.lib-cf2 { background: rgba(37, 99, 235, .20); background: color-mix(in srgb, var(--accent) 22%, transparent); }
+#paper a.ltx_ref.lib-cf3 { background: rgba(37, 99, 235, .32); background: color-mix(in srgb, var(--accent) 34%, transparent); }
+
+/* 홈 (style.css의 .home button/.home input보다 구체적으로) */
+.lib-home { display: flex; flex-direction: column; gap: 12px; }
+.lib-sum { font-weight: normal; font-size: 13px; color: var(--muted); }
+.lib-home .lib-h { margin: 0; font-size: 13px; font-weight: 600; color: var(--muted); }
+.lib-recent, .lib-list { display: flex; flex-direction: column; gap: 8px; }
+.lib-recent[hidden], .lib-tabs[hidden], .lib-panel[hidden], .lib-chips[hidden], .lib-empty[hidden] { display: none; }
+.lib-card { display: flex; align-items: stretch; border-radius: 12px; background: var(--card); }
+.lib-card-link { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 10px 4px 10px 12px;
+  color: var(--fg); text-decoration: none; }
+.lib-card-title { font-size: 15px; font-weight: 600; line-height: 1.35; overflow: hidden; display: -webkit-box;
+  -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.lib-card-meta { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lib-card-gist { font-size: 13px; line-height: 1.45; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical; }
+.lib-card-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin-top: 2px; font-size: 12px; color: var(--muted); }
+.lib-card-foot:empty { display: none; }
+.lib-status { padding: 0 7px; border-radius: 999px; background: var(--bg); }
+.lib-s-reading { color: var(--accent); }
+.lib-s-done { color: #16a34a; }
+.lib-tagchip { color: var(--accent); }
+.lib-bar { display: block; height: 3px; margin-top: 6px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.lib-bar > span { display: block; height: 100%; background: var(--accent); }
+.lib-home .lib-more { flex: none; width: 40px; padding: 0; border: 0; border-radius: 0 12px 12px 0; background: none;
+  color: var(--muted); font-size: 18px; }
+.lib-tabs { display: flex; gap: 6px; overflow-x: auto; }
+.lib-home .lib-tab { flex: none; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg);
+  color: var(--fg); font-size: 14px; }
+.lib-home .lib-tab[aria-selected="true"] { background: var(--fg); border-color: var(--fg); color: var(--bg); }
+.lib-panel { display: flex; flex-direction: column; gap: 8px; }
+.lib-tools { display: flex; gap: 6px; }
+/* 16px: iOS가 입력칸 포커스 때 확대하지 않게 */
+.home .lib-search { flex: 1; min-width: 0; padding: 8px 10px; font-size: 16px; }
+.lib-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.lib-home .lib-chip, .lib-peek .lib-chip { padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg);
+  color: var(--fg); font-size: 13px; }
+.lib-home .lib-chip[aria-pressed="true"], .lib-peek .lib-chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.lib-home .lib-btn { flex: none; padding: 6px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+  color: var(--fg); font-size: 13px; }
+.lib-home .lib-more-rows { align-self: center; }
+.lib-backup { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line);
+  font-size: 13px; color: var(--muted); }
+.lib-backup-label { margin-right: auto; }
+.lib-empty { margin: 4px 0; font-size: 14px; color: var(--muted); }
+.home .lib-file { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; overflow: hidden; opacity: 0; pointer-events: none; }
+
+/* 모든 노트 */
+.lib-note { padding: 10px 12px; border-left: 4px solid var(--lib-hl, var(--accent)); border-radius: 12px; background: var(--card);
+  font-size: 14px; overflow-wrap: break-word; }
+.lib-c-yellow { --lib-hl: #facc15; }
+.lib-c-green { --lib-hl: #4ade80; }
+.lib-c-blue { --lib-hl: #60a5fa; }
+.lib-c-pink { --lib-hl: #f472b6; }
+.lib-c-red { --lib-hl: #f87171; }
+.lib-c-purple { --lib-hl: #c084fc; }
+.lib-c-orange { --lib-hl: #fb923c; }
+.lib-note-quote { margin: 0 0 6px; color: var(--muted); font-size: 13px; overflow: hidden; display: -webkit-box;
+  -webkit-line-clamp: 4; -webkit-box-orient: vertical; }
+.lib-md > :first-child { margin-top: 0; }
+.lib-md > :last-child { margin-bottom: 0; }
+.lib-md p, .lib-md ul, .lib-md ol { margin: .4em 0; }
+.lib-md ul, .lib-md ol { padding-left: 1.3em; }
+.lib-md pre, .lib-md table, .lib-md .katex-display { overflow-x: auto; }
+.lib-md code { font: .88em ui-monospace, Menlo, monospace; }
+.lib-qa { margin-top: 6px; }
+.lib-qa summary { cursor: pointer; font-weight: 600; }
+.lib-qa .lib-md { margin-top: 4px; }
+.lib-note-foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.lib-note-foot a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-note-foot span { flex: none; }
+
+/* 상태·즐겨찾기·태그 편집 peek */
+.lib-edit { display: flex; flex-direction: column; gap: 10px; padding: 4px 0; }
+.lib-edit-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.lib-edit-label { width: 4.5em; font-size: 13px; color: var(--muted); }
+.lib-tag-form { display: inline-flex; gap: 6px; }
+.lib-tag-input { width: 9em; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg);
+  color: var(--fg); font-size: 16px; }
+.lib-edit-meta { font-size: 12px; color: var(--muted); }
