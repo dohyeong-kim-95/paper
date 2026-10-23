@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}{{ paper.title }}{% endblock %}
+{% block body %}
+<header class="bar"><a href="/">←</a><span>{{ arxiv_id }}</span></header>
+<main id="paper" class="paper">{{ paper.html | safe }}</main>
+
+<button id="ask-btn" class="ask-btn" hidden>질문하기</button>
+
+<section id="sheet" class="sheet" hidden>
+  <div class="sheet-head"><b>질문</b><button id="close">✕</button></div>
+  <blockquote id="quote"></blockquote>
+  <div class="presets">
+    <button data-q="이 부분을 쉽게 설명해줘">쉽게 설명</button>
+    <button data-q="이 수식의 각 기호와 의미를 풀어줘">수식 풀이</button>
+    <button data-q="한국어로 번역해줘">번역</button>
+    <button data-q="논문 전체 맥락에서 이 부분이 왜 중요한지 알려줘">왜 중요?</button>
+  </div>
+  <form id="ask-form"><input id="q" placeholder="직접 질문하기"><button>↑</button></form>
+  <div id="answer" class="answer"></div>
+</section>
+
+<script>
+  const ARXIV_ID = {{ arxiv_id | tojson }};
+  fetch(`/api/prewarm/${ARXIV_ID}`, { method: "POST" });
+</script>
+<script src="/static/app.js"></script>
+{% endblock %}

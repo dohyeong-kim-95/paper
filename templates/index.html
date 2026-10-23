@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block body %}
+<main class="home">
+  <h1>Paper Reader</h1>
+  <form action="/open" method="get">
+    <input name="q" placeholder="arXiv ID 또는 URL (예: 2401.04088)" autofocus required>
+    <button>열기</button>
+  </form>
+</main>
+{% endblock %}
