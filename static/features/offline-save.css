@@ -1,0 +1,14 @@
+/* offline-save: 오프라인 배너(헤더 아래 띠 30), 시트의 '네트워크 연결 필요', 저장 관리 peek */
+.os-banner { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 16px; font-size: 13px; line-height: 1.4;
+  background: #fef3c7; color: #78350f; border-bottom: 1px solid rgba(120, 53, 15, .2); }
+.os-banner span { flex: 1; min-width: 0; }
+.os-x { flex: none; min-width: 36px; min-height: 32px; border: 0; background: none; color: inherit; font-size: 14px; }
+.os-net { flex-basis: 100%; padding: 8px 12px; border-radius: 10px; font-size: 13px; line-height: 1.5;
+  background: #fef3c7; color: #78350f; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="sepia"]) .os-banner,
+  :root:not([data-theme="light"]):not([data-theme="sepia"]) .os-net { background: #3b2f12; color: #fde68a; }
+}
+:root[data-theme="dark"] .os-banner, :root[data-theme="dark"] .os-net { background: #3b2f12; color: #fde68a; }
+.os-info p { margin: 0 0 6px; }
+.os-info .os-muted { font-size: 13px; color: var(--muted); }
