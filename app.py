@@ -57,6 +57,35 @@ def parse_arxiv_id(s: str) -> str | None:
     return m.group(1) if m else None
 
 
+CLEAN_VERSION = 2  # clean_article 규칙이 바뀌면 올림 → 디스크 캐시의 옛 논문도 읽을 때 다시 정리
+UNSAFE_TAGS = ("iframe", "frame", "frameset", "object", "embed", "applet", "form", "base", "meta", "link",
+               "animate", "set", "animatemotion", "animatetransform", "portal")
+URL_ATTRS = ("href", "src", "xlink:href", "action", "formaction", "poster", "background")
+
+
+def _safe_url(value: str, tag: str, attr: str) -> bool:
+    # 브라우저처럼 공백·제어문자를 지우고 scheme 검사 ("java\nscript:" 우회 방지)
+    v = re.sub(r"[\x00-\x20\x7f]+", "", value or "").lower()
+    if v.startswith(("#", "http://", "https://", "//")) or (attr == "href" and v.startswith("mailto:")):
+        return True
+    if tag == "img" and attr == "src" and v.startswith("data:image/"):
+        return True
+    return not re.match(r"^[a-z][a-z0-9+.-]*:", v)  # scheme 없는 상대 경로만
+
+
+def sanitize_article(article) -> None:
+    """논문 HTML은 | safe 로 그대로 넣으므로 스크립트가 될 수 있는 것은 모두 제거 (on* 속성, javascript: 등)"""
+    for el in article.find_all(UNSAFE_TAGS):
+        el.decompose()
+    for el in article.find_all(True):
+        for attr in list(el.attrs):
+            name = attr.lower()
+            if name.startswith("on") or name == "srcdoc":
+                del el[attr]
+            elif name in URL_ATTRS and not _safe_url(str(el.get(attr)), el.name, name):
+                del el[attr]
+
+
 def clean_article(raw: str, base_url: str) -> dict:
     soup = BeautifulSoup(raw, "html.parser")
     article = soup.find("article") or soup.body
@@ -75,7 +104,9 @@ def clean_article(raw: str, base_url: str) -> dict:
             img["loading"] = "lazy"
     for a in article.find_all("a", href=True):
         if not a["href"].startswith("#"):
-            a["href"] = str(httpx.URL(base_url).join(a["href"]))
+            with contextlib.suppress(Exception):
+                a["href"] = str(httpx.URL(base_url).join(a["href"]))
+    sanitize_article(article)
 
     html = str(article)
 
@@ -84,7 +115,7 @@ def clean_article(raw: str, base_url: str) -> dict:
     for math in text_soup.find_all("math"):
         math.replace_with(f" ${math.get('alttext', '')}$ ")
     text = re.sub(r"\n\s*\n+", "\n\n", text_soup.get_text("\n"))
-    return {"title": title, "html": html, "text": text}
+    return {"title": title, "html": html, "text": text, "v": CLEAN_VERSION}
 
 
 # ---------- Claude 공용: 모든 호출은 system/REQUEST_OPTS가 같아야 논문 캐시를 공유함 ----------
@@ -277,8 +308,12 @@ async def fetch_paper(arxiv_id: str) -> dict:
 async def _load_paper(arxiv_id: str) -> dict:
     path = paper_path(arxiv_id)
     paper = read_json(path)
-    if not isinstance(paper, dict) or "text" not in paper:  # 캐시 없음/손상 -> 새로 받기
+    if not isinstance(paper, dict) or "text" not in paper or "html" not in paper:  # 캐시 없음/손상 -> 새로 받기
         paper = await fetch_paper(arxiv_id)
+        write_json(path, paper)
+    elif paper.get("v") != CLEAN_VERSION:  # 옛 규칙으로 저장된 논문: 다시 정리 (URL은 이미 절대경로라 그대로)
+        old = paper
+        paper = {**clean_article(old["html"], f"https://arxiv.org/html/{arxiv_id}"), "title": old.get("title") or "Untitled"}
         write_json(path, paper)
     papers[arxiv_id] = paper
     return paper
@@ -444,9 +479,9 @@ async def cached_task(arxiv_id: str, name: str, prompt: str, max_tokens: int = 4
         except HTTPException as e:
             _failures[key] = (time.time(), e.status_code, e.detail)
             raise
-        except (ValueError, TypeError, KeyError, AttributeError) as e:
-            _failures[key] = (time.time(), 502, f"응답 형식 오류: {e}")
-            raise HTTPException(502, f"응답 형식 오류: {e}") from e
+        except Exception as e:  # noqa: BLE001 - validate의 어떤 오류든 실패로 기억 (IndexError 등도 매번 과금 방지)
+            _failures[key] = (time.time(), 502, f"응답 형식 오류: {type(e).__name__}: {e}")
+            raise HTTPException(502, f"응답 형식 오류: {type(e).__name__}: {e}") from e
         _failures.pop(key, None)
         write_json(path, value)
         return value
@@ -478,8 +513,13 @@ class _Live:
 _live: dict = {}
 
 
-async def _produce(paper: dict, path: Path, prompt: str, max_tokens: int, live: _Live):
-    ok = False
+def error_tail(msg) -> str:
+    # 클라이언트(app.js ERROR_TAIL, sw.js)가 알아보는 실패 꼬리: 마지막 한 줄
+    return "\n\n[오류] " + re.sub(r"\s+", " ", str(msg)).strip()
+
+
+async def _produce(paper: dict, path: Path, prompt: str, max_tokens: int, live: _Live, key: tuple):
+    error = "중단됨"
     try:
         async with client.messages.stream(
             **REQUEST_OPTS, max_tokens=max_tokens, system=system_blocks(paper), messages=[user_turn(prompt)]
@@ -487,23 +527,36 @@ async def _produce(paper: dict, path: Path, prompt: str, max_tokens: int, live: 
             async for text in stream.text_stream:
                 live.push(text)
             final = await stream.get_final_message()
-        ok = final.stop_reason != "max_tokens"
+        if final.stop_reason == "max_tokens":
+            error = "응답이 너무 길어 잘렸습니다 (max_tokens)."
+        elif not "".join(live.chunks).strip():
+            error = "빈 응답"
+        else:
+            error = None
     except anthropic.APIError as e:
-        live.push(f"\n\n[오류] {e}")
+        error = str(e)
     except Exception as e:  # noqa: BLE001 - 어떤 실패든 캐시하지 않고 알림
         log.exception("cached_stream failed")
-        live.push(f"\n\n[오류] {type(e).__name__}")
+        error = type(e).__name__
     finally:
-        text = "".join(live.chunks)
-        if ok and text.strip():
-            write_json(path, text)
-        live.finish()
+        try:
+            if error is None:
+                write_json(path, "".join(live.chunks))
+                _failures.pop(key, None)
+            else:
+                # 실패는 저장하지 않고 FAIL_TTL 동안 기억 (매 GET마다 다시 생성·과금 방지). 본문 끝에 [오류] 꼬리
+                _failures[key] = (time.time(), 502, f"생성 실패: {error}")
+                live.push(error_tail(error))
+        finally:
+            live.finish()  # 저장이 실패해도 따라 읽는 응답들은 끝나야 함
 
 
 async def cached_stream(arxiv_id: str, name: str, prompt: str, max_tokens: int = 4000,
-                        headers: dict | None = None) -> StreamingResponse:
+                        headers: dict | None = None, retry: bool = False) -> StreamingResponse:
     """텍스트 작업을 스트리밍. 캐시 적중이면 전체를 한 덩어리로. 생성은 백그라운드 Task라
-    사용자가 떠나도 끝까지 돌고 깨끗이 끝났을 때만 저장. 동시 GET은 같은 버퍼를 공유"""
+    사용자가 떠나도 끝까지 돌고 깨끗이 끝났을 때만 저장. 동시 GET은 같은 버퍼를 공유.
+    실패(API 오류·max_tokens 잘림·빈 응답)는 본문 끝 '[오류] …' 꼬리로 알리고 저장하지 않으며, FAIL_TTL 동안은
+    새로 생성하지 않고 502 (retry=True면 다시 시도) — cached_task와 같은 규칙"""
     paper = await get_paper(arxiv_id)
     path = task_path(arxiv_id, name)
     hdrs = {**OFFLINE_HEADERS, "Cache-Control": "no-cache", **(headers or {})}
@@ -514,8 +567,11 @@ async def cached_stream(arxiv_id: str, name: str, prompt: str, max_tokens: int =
     loop = asyncio.get_running_loop()
     live = _live.get(key)
     if live is None or live.loop is not loop:
+        failed = _failures.get(key)
+        if failed and not retry and time.time() - failed[0] < FAIL_TTL:
+            raise HTTPException(failed[1], failed[2])
         live = _live[key] = _Live(loop)
-        t = spawn(_produce(paper, path, prompt, max_tokens, live))
+        t = spawn(_produce(paper, path, prompt, max_tokens, live, key))
         t.add_done_callback(lambda _t, live=live: _live.get(key) is live and _live.pop(key))
 
     async def tail():
@@ -738,9 +794,34 @@ async def open_paper(q: str):
     return RedirectResponse(f"/paper/{arxiv_id}")
 
 
+PAPER_MISSING_HOOKS: list = []  # async fn(request, arxiv_id) -> Response | None: HTML이 없는 논문의 대체 페이지
+
+
+def on_paper_missing(fn):
+    """기능이 등록 (entry-routes): @core.on_paper_missing async def f(request, arxiv_id) -> Response | None.
+    /paper/{id}가 404일 때 등록 순서대로 불러 처음 나온 Response를 돌려줌. arxiv_id는 사용자 입력이므로 직접 검증할 것"""
+    PAPER_MISSING_HOOKS.append(fn)
+    return fn
+
+
 @app.get("/paper/{arxiv_id}")
 async def read_paper(request: Request, arxiv_id: str):
-    paper = await get_paper(arxiv_id)
+    try:
+        paper = await get_paper(arxiv_id)
+    except HTTPException as e:
+        if e.status_code != 404:
+            raise
+        for fn in PAPER_MISSING_HOOKS:
+            try:
+                r = await fn(request, arxiv_id)
+            except Exception:  # noqa: BLE001 - 대체 페이지가 깨져도 기본 오류 페이지는 나옴
+                log.exception("paper_missing hook %r failed", fn)
+                continue
+            if r is not None:
+                return r
+        return templates.TemplateResponse(
+            request, "error.html", {"message": e.detail, "arxiv_id": arxiv_id}, status_code=404
+        )
     return templates.TemplateResponse(
         request, "paper.html", {"paper": paper, "arxiv_id": arxiv_id}
     )
@@ -842,13 +923,18 @@ async def feedback(body: Feedback):
 
 
 # ---------- 기능 라우터: features/*.py 각각의 `router`를 등록 (반드시 파일 맨 끝) ----------
+# features/__init__.py가 `import app`을 하므로 기능 모듈을 먼저 import해도 app이 끝까지 로드된 뒤 등록됨.
+# 반환값: router를 실제로 등록한 모듈 이름들. router가 없는 모듈은 경고 (도우미 모듈은 _이름.py로)
 def load_feature_routers(target: FastAPI, path: Path = BASE_DIR / "features", package: str = "features") -> list[str]:
     loaded = []
     for f in sorted(path.glob("[!_]*.py")):
         try:
             mod = importlib.import_module(f"{package}.{f.stem}")
-            if hasattr(mod, "router"):
-                target.include_router(mod.router)
+            router = getattr(mod, "router", None)
+            if router is None:
+                log.warning("feature %s has no `router` (half-imported module? helper modules must be named _x.py)", f.name)
+                continue
+            target.include_router(router)
             loaded.append(f.stem)
         except Exception:  # noqa: BLE001 - 기능 하나가 깨져도 앱은 뜸
             log.exception("feature %s failed to load", f.name)

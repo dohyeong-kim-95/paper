@@ -64,8 +64,9 @@
   }
 
   // ---------- 레이어: 시트·peek·뷰어·점프를 시스템 뒤로가기(안드로이드 back, iOS 스와이프)로 닫기 ----------
-  // 레이어가 하나라도 열려 있으면 history에 항목 하나를 둠. 뒤로가기 → 맨 위 레이어 하나 닫고 필요하면 다시 push.
-  // 레이어가 열린 동안은 스크롤 복원을 끔 (뒤로가기 때 브라우저가 레이어를 연 시점 위치로 튀지 않게)
+  // 레이어가 하나라도 열려 있으면 history에 표지 항목({prLayer:1}) 하나를 둠. 뒤로가기 → 맨 위 레이어 하나 닫고 필요하면 다시 push.
+  // 스크롤 복원 모드는 history 항목마다 따로: 레이어를 연 시점의 항목만 manual (뒤로가기로 돌아올 때 브라우저가
+  // 그 시점 위치로 튀지 않게), 표지 항목은 auto (새로고침·탭 폐기·다른 페이지에서 돌아올 때 읽던 위치 복원)
   const layers = [];
   let sentinel = false, backPending = 0;
   const scrollMode = m => { try { history.scrollRestoration = m; } catch { /* 무시 */ } };
@@ -73,10 +74,13 @@
     if (sentinel || backPending || !layers.length) return;
     scrollMode("manual");
     try { history.pushState({ prLayer: 1 }, ""); sentinel = true; } catch { /* 무시 */ }
+    scrollMode("auto");
   }
+  // 새로고침 등으로 표지 항목에서 페이지가 다시 열림(레이어 없음): 보통 항목으로 (레이어를 열면 표지를 새로 쌓음)
+  try { if (history.state && history.state.prLayer) history.replaceState(null, ""); } catch { /* 무시 */ }
   const settle = () => { pushSentinel(); if (!layers.length && !backPending) scrollMode("auto"); };
   function layer(onClose, opts = {}) {
-    const l = { onClose, kind: opts.kind || "layer", open: true };
+    const l = { onClose, kind: opts.kind || "layer", keepOnSheet: !!opts.keepOnSheet, open: true };
     layers.push(l);
     pushSentinel();
     const close = (reason = "close") => {
@@ -101,6 +105,10 @@
     settle();
   });
   const topLayer = () => layers[layers.length - 1] || null;
+  // 조건에 맞는 열린 레이어를 위에서부터 닫음 (시트를 열 때 그 위에 뜨는 오버레이 닫기 등)
+  function closeLayers(pred, reason = "close") {
+    for (const l of layers.slice().reverse()) if (l.open && pred(l)) l.close(reason);
+  }
   document.addEventListener("keydown", e => {
     if (e.key === "Escape" && topLayer()) { e.preventDefault(); topLayer().close("escape"); }
   });
@@ -177,22 +185,44 @@
   }
 
   // ---------- 토스트 (z 40). 되돌리기 버튼 지원: toast('삭제됨', {actionLabel: '실행 취소', onAction}) ----------
-  let toastTimer;
-  function toast(msg, { actionLabel, onAction, ms = 3500 } = {}) {
+  // 한 번에 하나. 일반 토스트는 새 토스트로 바로 바뀌지만, 버튼이 있는 토스트(실행 취소·이동)가 떠 있으면
+  // 그동안 온 토스트는 뒤에 줄 섬 (일반 토스트는 최대 2개만 대기) → 되돌리기가 다른 기능의 알림에 지워지지 않음
+  let toastTimer = null, toastCur = null;
+  const toastQ = [];
+  function showToast(t) {
     let root = $("pr-toast");
     if (!root) {
       root = h("div", { id: "pr-toast", class: "pr-toast pr-ui", role: "status", "aria-live": "polite" });
       document.body.append(root);
     }
     clearTimeout(toastTimer);
-    const close = () => { root.hidden = true; root.replaceChildren(); };
-    root.replaceChildren(h("span", { text: msg }));
-    if (actionLabel) {
-      root.append(h("button", { text: actionLabel, onclick: () => { close(); onAction && onAction(); } }));
+    toastCur = t;
+    root.replaceChildren(h("span", { text: t.msg }));
+    if (t.actionLabel) {
+      root.append(h("button", { text: t.actionLabel, onclick: () => { t.close(); t.onAction && t.onAction(); } }));
     }
     root.hidden = false;
-    toastTimer = setTimeout(close, actionLabel ? Math.max(ms, 5000) : ms);
-    return { close };
+    toastTimer = setTimeout(t.close, t.actionLabel ? Math.max(t.ms, 5000) : t.ms);
+  }
+  function toast(msg, { actionLabel, onAction, ms = 3500 } = {}) {
+    const t = { msg, actionLabel, onAction, ms };
+    t.close = () => {
+      const i = toastQ.indexOf(t);
+      if (i >= 0) { toastQ.splice(i, 1); return; }
+      if (toastCur !== t) return;
+      clearTimeout(toastTimer);
+      toastCur = null;
+      const root = $("pr-toast");
+      if (root) { root.hidden = true; root.replaceChildren(); }
+      const next = toastQ.shift();
+      if (next) showToast(next);
+    };
+    if (toastCur && toastCur.actionLabel) {
+      const plain = toastQ.filter(x => !x.actionLabel);
+      if (!actionLabel && plain.length >= 2) toastQ.splice(toastQ.indexOf(plain[0]), 1);
+      toastQ.push(t);
+    } else showToast(t);
+    return { close: t.close };
   }
   document.addEventListener("paper:store-full", () =>
     toast("저장 공간이 부족해 일부가 저장되지 않았습니다 · 내보내기를 권장합니다", { ms: 6000 }));
@@ -360,7 +390,7 @@
   document.addEventListener("DOMContentLoaded", () => $("bar-more")?.addEventListener("click", openMenu));
 
   window.PaperUI = Object.assign(api, {
-    h, layer, topLayer, dragDown, peek, toast, addBarButton, addFab, homeSection, status, feedback,
+    h, layer, topLayer, closeLayers, dragDown, peek, toast, addBarButton, addFab, homeSection, status, feedback,
     cloneClean, copy, share, download,
   });
 })();

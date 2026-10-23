@@ -1,6 +1,6 @@
 "use strict";
 const { test, assert, load } = require("./_runner");
-const { BASE_PRESETS, rankPresets, selInfoFromText, buildPayload, splitSentences, ERROR_TAIL, SLOTS } = load("static/app.js");
+const { BASE_PRESETS, rankPresets, selInfoFromText, buildPayload, splitSentences, ERROR_TAIL, SLOTS, makeSession } = load("static/app.js");
 
 const ids = list => list.map(p => p.id);
 
@@ -79,4 +79,35 @@ test("서버 스트림 오류 꼬리 감지", () => {
 test("답변 슬롯 순서표", () => {
   const order = Object.entries(SLOTS).sort((a, b) => a[1] - b[1]).map(x => x[0]);
   assert.deepEqual(order, ["evidence-chips", "answer-actions", "highlights-notes", "vocab", "ask-paper"]);
+});
+
+test("makeSession: 저장된 대화를 같은 고정 필드로 이어가면 세션 훅이 다시 돌지 않아 첫 턴 필드가 같음", () => {
+  let runs = 0;
+  const hooks = [s => { runs++; s.context += "\n<reader>R</reader>"; }, s => { s.extra.lang = "ko"; }];
+  const s1 = makeSession({ quote: "q", selection: "SEL", context: "CTX", section: "2 Method" }, "2401.00001", hooks);
+  assert.equal(s1.context, "CTX\n<reader>R</reader>");
+  assert.equal(s1.continued, false);
+  const p1 = buildPayload(s1, "Q1");
+  s1.history.push({ role: "user", content: p1.question }, { role: "assistant", content: "A1" });
+  s1.shown.push("Q1");
+  s1.meta.push({ label: "뜻", presetId: "meaning", via: null });
+  // highlights-notes가 저장해 둔 값 그대로 다시 열기
+  const saved = JSON.parse(JSON.stringify({ quote: s1.quote, selection: s1.selection, context: s1.context, section: s1.section,
+    extra: s1.extra, history: s1.history, shown: s1.shown, meta: s1.meta }));
+  const s2 = makeSession(saved, "2401.00001", hooks);
+  assert.equal(runs, 1, "이어가기에서는 훅이 다시 돌지 않음");
+  assert.equal(s2.continued, true);
+  const p2 = buildPayload(s2, "Q2");
+  for (const k of ["selection", "context", "section", "lang"]) assert.equal(p2[k], p1[k], k);
+  assert.deepEqual(p2.history[0], { role: "user", content: "Q1" });
+  assert.deepEqual(s2.meta, [{ label: "뜻", presetId: "meaning", via: null }]);
+});
+
+test("makeSession: 훅 오류는 onErr로, 나머지 훅은 계속", () => {
+  const errs = [];
+  const s = makeSession({ selection: "x" }, null, [() => { throw new Error("boom"); }, s => { s.context = "ok"; }], e => errs.push(e.message));
+  assert.deepEqual(errs, ["boom"]);
+  assert.equal(s.context, "ok");
+  assert.equal(s.quote, "x");
+  assert.equal(s.endpoint, "/api/ask");
 });

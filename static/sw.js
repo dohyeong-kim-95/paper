@@ -1,17 +1,22 @@
 // 서비스워커: 앱 셸·논문 페이지·기능 번들 캐시 + 오프라인 읽기
 // - GET /api/* 는 네트워크 우선. 응답에 'X-Offline-Cacheable: 1' 헤더가 있으면 저장해 두고 오프라인 때 사용
-//   (기능은 sw.js를 고치지 말고 서버 응답에 헤더를 붙여 참여: core.offline_json / core.cached_stream)
+//   (기능은 sw.js를 고치지 말고 서버 응답에 헤더를 붙여 참여: core.offline_json / core.cached_stream).
+//   text/plain 본문이 '[오류] …' 꼬리로 끝나면(실패한 스트림) 저장하지 않음
+// - 그림: 보면서 받은 것은 IMG(최근 60개), 사용자가 '오프라인 저장'한 논문의 그림은 SAVED(개수 제한 없음, 먼저 찾음)
 // - 기능별 확장은 static/features/<id>.sw.js → /features.sw.js 로 묶여 여기서 importScripts
 const V = "paper-v2";
-const SHELL = `${V}-shell`, PAGES = `${V}-pages`, API = `${V}-api`, CDN = `${V}-cdn`, IMG = `${V}-img`;
-const KEEP = [SHELL, PAGES, API, CDN, IMG];
+const SHELL = `${V}-shell`, PAGES = `${V}-pages`, API = `${V}-api`, CDN = `${V}-cdn`, IMG = `${V}-img`, SAVED = `${V}-saved`;
+const KEEP = [SHELL, PAGES, API, CDN, IMG, SAVED];
+const ERROR_TAIL = /\n\n\[오류\][^\n]*$/; // app.py error_tail, app.js ERROR_TAIL와 같은 규칙
 const SHELL_URLS = ["/", "/static/style.css", "/static/store.js", "/static/ui.js", "/static/anchor.js", "/static/app.js",
   "/static/render.js", "/static/voice.js", "/static/icon-192.png", "/static/manifest.json", "/features.js", "/features.css"];
 const IMG_MAX = 60; // 다른 출처 이미지는 불투명 응답이라 용량을 크게 차지 → 개수 제한
 const PAGE_TIMEOUT = 3000;
 
-// 기능 확장용: routes에 {test(url, request), handle(event)} 를 넣으면 기본 처리보다 먼저 검사
-self.PR_SW = { V, SHELL, PAGES, API, CDN, IMG, IMG_MAX, routes: [], onMessage: [] };
+// 기능 확장용: routes에 {test(url, request), handle(event)} 를 넣으면 기본 처리보다 먼저 검사.
+// 확장이 자기 캐시를 쓰려면 PR_SW.keep(name)으로 등록 (activate가 KEEP에 없는 캐시는 지움)
+self.PR_SW = { V, SHELL, PAGES, API, CDN, IMG, SAVED, IMG_MAX, routes: [], onMessage: [],
+  keep: name => { if (!KEEP.includes(name)) KEEP.push(name); } };
 try { importScripts("/features.sw.js"); } catch (e) { /* 확장이 없거나 오프라인 */ }
 
 self.addEventListener("install", e => {
@@ -68,12 +73,24 @@ async function asset(req, url) {
   }
 }
 
+// 실패 꼬리로 끝나는 텍스트 스트림(core.cached_stream 실패)은 저장하지 않음
+async function storeApi(cache, req, res) {
+  try {
+    if ((res.headers.get("Content-Type") || "").startsWith("text/plain")) {
+      const text = await res.text();
+      if (ERROR_TAIL.test(text)) return;
+      return await cache.put(req, new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers }));
+    }
+    return await cache.put(req, res);
+  } catch (e) { /* 저장 실패는 무시 */ }
+}
+
 // GET /api/*: 네트워크 우선, 기능이 허락한 응답(X-Offline-Cacheable: 1)만 저장
 async function api(req) {
   const cache = await caches.open(API);
   try {
     const res = await fetch(req);
-    if (res.ok && res.headers.get("X-Offline-Cacheable") === "1") cache.put(req, res.clone());
+    if (res.ok && res.headers.get("X-Offline-Cacheable") === "1") storeApi(cache, req, res.clone());
     return res;
   } catch (e) {
     return (await cache.match(req)) || new Response(JSON.stringify({ detail: "오프라인입니다" }),
@@ -97,6 +114,8 @@ async function trim(name, max) {
 }
 
 async function image(req) {
+  const saved = await (await caches.open(SAVED)).match(req);
+  if (saved) return saved;
   try { return await cacheFirst(req, IMG); }
   finally { trim(IMG, IMG_MAX); }
 }
@@ -118,21 +137,30 @@ self.addEventListener("fetch", e => {
   if (req.destination === "image" && /(^|\.)arxiv\.org$/.test(url.hostname)) return e.respondWith(image(req));
 });
 
-// 페이지에서 그림 미리 저장: navigator.serviceWorker.controller.postMessage({type: 'precache', urls})
+// 페이지에서 그림 오프라인 저장: navigator.serviceWorker.controller.postMessage({type: 'precache', urls})
+// → SAVED 캐시(개수 제한·자동 삭제 없음, 이미 IMG에 있으면 복사). 지우기: {type: 'unsave', urls}
 self.addEventListener("message", e => {
   const msg = e.data || {};
   for (const fn of self.PR_SW.onMessage) { try { fn(e); } catch (err) { /* 무시 */ } }
-  if (msg.type !== "precache" || !Array.isArray(msg.urls)) return;
+  if (!Array.isArray(msg.urls)) return;
+  if (msg.type === "unsave") {
+    e.waitUntil((async () => {
+      const cache = await caches.open(SAVED);
+      for (const u of msg.urls) await cache.delete(u);
+      if (e.source) e.source.postMessage({ type: "unsaved", n: msg.urls.length });
+    })());
+    return;
+  }
+  if (msg.type !== "precache") return;
   e.waitUntil((async () => {
-    const cache = await caches.open(IMG);
+    const cache = await caches.open(SAVED), seen = await caches.open(IMG);
     let n = 0;
-    for (const u of msg.urls.slice(0, IMG_MAX)) {
+    for (const u of msg.urls) {
       try {
-        if (!(await cache.match(u))) await cache.put(u, await fetch(u, { mode: "no-cors" }));
+        if (!(await cache.match(u))) await cache.put(u, (await seen.match(u)) || await fetch(u, { mode: "no-cors" }));
         n++;
       } catch (err) { /* 실패한 그림은 건너뜀 */ }
     }
-    await trim(IMG, IMG_MAX);
     if (e.source) e.source.postMessage({ type: "precached", n });
   })());
 });

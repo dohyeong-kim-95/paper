@@ -13,13 +13,17 @@
   const rec = new SR();
   rec.lang = "ko-KR";
   rec.interimResults = true;  // 말하는 동안 입력창에 실시간 표시
-  let finalText = "";
+  let finalText = "", cancelled = false;
   const recording = () => mic.classList.contains("recording");
 
   mic.addEventListener("click", () => {
     if (recording()) return rec.stop();
-    window.PaperApp && PaperApp.tts.stop("mic");
+    if (window.PaperApp) {
+      PaperApp.tts.stop("mic");
+      PaperApp.tts.prime(); // iOS: 이 탭 안에서 소리 잠금 해제 → 답변 자동 읽기(via=voice)가 나중에 소리 남
+    }
     finalText = "";
+    cancelled = false;
     rec.start();
   });
 
@@ -32,12 +36,18 @@
   // 인식이 끝나고 확정된 문장이 있으면 바로 질문 전송 (via=voice → 답변을 읽어주는 기능이 알 수 있게)
   rec.onend = () => {
     mic.classList.remove("recording");
-    if (finalText) {
+    if (finalText && !cancelled) {
       form.dataset.via = "voice";
       form.requestSubmit();
     }
+    finalText = "";
+    cancelled = false;
   };
+  // 읽기가 시작되면 마이크는 취소 (말하던 중간까지를 질문으로 보내지 않음)
   document.addEventListener("paper:tts", e => {
-    if (e.detail && e.detail.state === "start" && recording()) rec.stop();
+    if (!(e.detail && e.detail.state === "start" && recording())) return;
+    cancelled = true;
+    finalText = "";
+    if (rec.abort) rec.abort(); else rec.stop();
   });
 })();

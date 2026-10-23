@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}논문을 열 수 없습니다{% endblock %}
+{% block page %}error{% endblock %}
+{% block body %}
+<main class="home">
+  <h1>논문을 열 수 없습니다</h1>
+  <p>{{ message }}</p>
+  <p><a href="https://arxiv.org/abs/{{ arxiv_id | urlencode }}">arXiv에서 보기</a> · <a href="/">홈으로</a></p>
+</main>
+{% endblock %}

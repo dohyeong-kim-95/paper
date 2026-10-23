@@ -41,3 +41,6 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 python -m unittest discover -s tests          # tests/js/*.test.js 도 node로 함께 실행
 for f in tests/js/*.test.js; do node $f; done  # JS만
 ```
+
+`tests/test_browser.py`는 서버를 띄워 `tests/browser/*.browser.js`를 헤드리스 Chromium(Playwright)으로 돌립니다.
+`node -e "require('playwright')"`가 안 되거나 Chromium이 없으면 건너뜁니다.

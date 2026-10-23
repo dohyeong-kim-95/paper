@@ -3,7 +3,8 @@
 {% block page %}paper{% endblock %}
 {% block body_attrs %} data-arxiv-id="{{ arxiv_id }}"{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
+{# 답변에만 필요: media=print로 받아 두고 onload에 적용 → CDN이 느려도 본문 페인트·스크립트를 막지 않음 #}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous" media="print" onload="this.media='all'">
 {% endblock %}
 {% block body %}
 <script>

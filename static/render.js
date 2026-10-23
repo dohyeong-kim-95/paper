@@ -46,10 +46,14 @@
     }
   }
 
+  // CDN 라이브러리(marked·DOMPurify)가 아직 없을 때 일반 텍스트로 그린 요소 → 원문.
+  // /features.js가 CDN보다 먼저 돌기 때문: 라이브러리가 오면(DOMContentLoaded/load) 그대로인 요소만 다시 그림
+  const plain = new Map();
   function render(el, text) {
     const ok = window.marked && window.DOMPurify; // CDN 실패 시 일반 텍스트
     el.style.whiteSpace = ok ? "" : "pre-wrap";
-    if (!ok) { el.textContent = text; return; }
+    if (!ok) { el.textContent = text; plain.set(el, text); return; }
+    plain.delete(el);
     const { out, math } = protect(text);
     el.innerHTML = DOMPurify.sanitize(restore(marked.parse(out, { breaks: true }), math));
     renderMath(el);
@@ -72,4 +76,14 @@
     queue.delete(el);
     render(el, text);
   };
+
+  function upgrade() {
+    if (!(window.marked && window.DOMPurify) || !plain.size) return;
+    for (const [el, text] of [...plain]) {
+      plain.delete(el);
+      if (el.isConnected && el.textContent === text) render(el, text); // 그 뒤에 바뀐 요소는 건드리지 않음
+    }
+  }
+  document.addEventListener("DOMContentLoaded", upgrade);
+  window.addEventListener("load", upgrade);
 })();

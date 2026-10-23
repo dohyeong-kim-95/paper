@@ -241,8 +241,14 @@
     return o ? quoteAt(idx.text, o.start, o.end) : null;
   }
 
-  // 화면 좌표 → 색인 오프셋 (탭 위치가 칠한 구간 안인지 판정할 때)
+  // 화면 좌표 → 색인 오프셋 (탭 위치가 칠한 구간 안인지 판정할 때).
+  // 색인된 본문 글자(텍스트 노드·수식) 위가 아니면 null: 기능 UI(.pr-ui), 번역(.tr-ko), 버튼, 각주 본문, 빈 곳 등
+  // (caret API는 user-select:none 영역에서 다음 본문 글자로 건너뛰므로 elementFromPoint로 먼저 확인)
   function offsetAtPoint(x, y) {
+    const r = root();
+    const hit = r && document.elementFromPoint(x, y);
+    if (!hit || !r.contains(hit)) return null;
+    for (let e = hit; e && e !== r; e = e.parentElement) if (skip(e)) return null;
     let node, off;
     if (document.caretPositionFromPoint) {
       const p = document.caretPositionFromPoint(x, y);
@@ -253,18 +259,24 @@
       if (!r) return null;
       node = r.startContainer; off = r.startOffset;
     } else return null;
-    const r = root();
-    return r && r.contains(node) ? pointToOffset(node, off, false) : null;
+    if (!node || !r.contains(node)) return null;
+    const idx = index();
+    if (node.nodeType === 3 && idx.nodeSeg.has(node)) return pointToOffset(node, off, false, idx);
+    const el = node.nodeType === 1 ? node : node.parentElement;
+    const m = el && el.closest("math");
+    return m && idx.nodeSeg.has(m) ? idx.nodeSeg.get(m).start : null;
   }
 
   // ---------- 칠하기: CSS Custom Highlight API, 없으면 <mark> 감싸기 ----------
+  // fallback:false → Highlight API가 없을 때 아무것도 안 칠함 (밑줄만 쓰는 gl-term, 자주 다시 칠하는 ps-match 등).
+  // 칠하기·지우기는 paper:dom-changed를 보내지 않음 (그 이벤트에서 다시 칠해도 반복되지 않게)
   const hasHL = () => typeof CSS !== "undefined" && CSS.highlights && typeof Highlight !== "undefined";
-  const painted = new Map(); // name -> {items: [{start,end}], marks: [Element], priority}
+  const painted = new Map(); // name -> {items: [{start,end}], marks: [Element], priority, fallback}
 
-  function paint(name, items, { priority = 0 } = {}) {
+  function paint(name, items, { priority = 0, fallback = true } = {}) {
     clear(name);
     const offs = (items || []).map(it => (it && typeof it.start === "number" && !("startContainer" in it) ? it : offsetsOf(it))).filter(Boolean);
-    const entry = { items: offs, marks: [], priority };
+    const entry = { items: offs, marks: [], priority, fallback };
     painted.set(name, entry);
     render(name, entry);
     return offs;
@@ -276,13 +288,12 @@
       const hl = new Highlight(...ranges);
       hl.priority = entry.priority;
       CSS.highlights.set(name, hl);
-    } else {
+    } else if (entry.fallback) {
       for (const o of entry.items) entry.marks.push(...wrap(o.start, o.end, () => {
         const m = document.createElement("mark");
         m.className = `pa-mark pa-mark-${name}`;
         return m;
       }, { silent: true }));
-      if (entry.marks.length) changed();
     }
   }
   function clear(name) {
@@ -290,7 +301,7 @@
     if (!e) return;
     painted.delete(name);
     if (hasHL()) CSS.highlights.delete(name);
-    if (e.marks.length) unwrap(e.marks);
+    if (e.marks.length) unwrap(e.marks, { silent: true });
   }
   // 탭한 점이 칠한 구간 안이면 그 항목의 번호, 아니면 -1
   function paintedAt(name, x, y) {
@@ -322,14 +333,14 @@
     if (!silent) changed();
     return els;
   }
-  function unwrap(els) {
+  function unwrap(els, { silent = false } = {}) {
     for (const w of els) {
       if (!w.parentNode) continue;
       while (w.firstChild) w.before(w.firstChild);
       w.remove();
     }
     invalidate();
-    changed();
+    if (!silent) changed();
   }
   // 본문 노드를 움직였으면 호출 → 다른 기능들이 칠하기를 다시 함
   let changeTimer;
@@ -359,7 +370,9 @@
       return;
     }
     if (hasHL()) {
-      CSS.highlights.set("pa-flash", new Highlight(target));
+      const hl = new Highlight(target);
+      hl.priority = 100; // 기능들의 칠하기(§5.10, ≤50) 위에
+      CSS.highlights.set("pa-flash", hl);
       setTimeout(() => CSS.highlights.delete("pa-flash"), 1500);
     } else {
       const el = target.startContainer.nodeType === 1 ? target.startContainer : target.startContainer.parentElement;

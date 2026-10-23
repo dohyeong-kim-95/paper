@@ -1,6 +1,8 @@
 """확장 기반(ext-hooks) 테스트: 질문 메시지 구성, 공용 Claude 헬퍼, 캐시 작업, 기능 로더·에셋 번들, arXiv, 피드백"""
 import asyncio
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -10,6 +12,7 @@ from unittest import mock
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from fastapi.testclient import TestClient
 
 from tests.helpers import (AsyncCoreTestCase, CoreTestCase, PAPER_ID, api_error, core, fixture, seed_paper)
@@ -20,8 +23,8 @@ def stream_app(name="overview.v1", prompt="3줄 요약 / 스냅샷", max_tokens=
     app = FastAPI()
 
     @app.get("/s/{arxiv_id}")
-    async def s(arxiv_id: str):
-        return await core.cached_stream(arxiv_id, name, prompt, max_tokens)
+    async def s(arxiv_id: str, retry: bool = False):
+        return await core.cached_stream(arxiv_id, name, prompt, max_tokens, retry=retry)
     return app
 
 
@@ -166,6 +169,16 @@ class CachedTaskTests(AsyncCoreTestCase):
             await core.cached_task(self.paper_id, "quiz.S1.v1", "p", validate=bad)
         self.assertFalse((self.cache / f"{PAPER_ID}.quiz.S1.v1.json").exists())
 
+    async def test_any_validator_error_is_remembered(self):
+        # IndexError 등 어떤 검증 오류든 502 + 10분 기억 (매 요청마다 다시 과금되지 않게)
+        self.claude.push('{"items": []}', '{"items": []}')
+        for _ in range(3):
+            with self.assertRaises(HTTPException) as cm:
+                await core.cached_task(self.paper_id, "skim.v1", "p", validate=lambda v: v["items"][0])
+            self.assertEqual(cm.exception.status_code, 502)
+            self.assertIn("IndexError", cm.exception.detail)
+        self.assertEqual(len(self.claude.calls), 1)
+
     async def test_cancelled_waiter_does_not_cancel_shared_work(self):
         self.claude.push({"text": '{"v": 1}', "delay": 0.1})
         t1 = asyncio.create_task(core.cached_task(self.paper_id, "gists.v1", "p"))
@@ -213,8 +226,31 @@ class CachedStreamTests(CoreTestCase):
                          {"chunks": ["a"], "stop_reason": "max_tokens"})
         with self.assertLogs("paper", "ERROR"):
             self.assertIn("[오류]", self.sclient.get(f"/s/{self.paper_id}").text)
-        self.assertEqual(self.sclient.get(f"/s/{self.paper_id}").text, "a")
+        # 실패는 10분 기억: 다시 생성(과금)하지 않고 502
+        r = self.sclient.get(f"/s/{self.paper_id}")
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(len(self.claude.calls), 1)
+        # retry=True면 다시 시도. max_tokens 잘림은 성공처럼 보이면 안 됨: [오류] 꼬리
+        r = self.sclient.get(f"/s/{self.paper_id}?retry=1")
+        self.assertEqual(r.text, "a\n\n[오류] 응답이 너무 길어 잘렸습니다 (max_tokens).")
+        self.assertEqual(len(self.claude.calls), 2)
         self.assertFalse((self.cache / f"{PAPER_ID}.overview.v1.json").exists())
+        self.assertEqual(self.sclient.get(f"/s/{self.paper_id}").status_code, 502)
+        self.assertEqual(len(self.claude.calls), 2)
+
+    def test_truncation_three_gets_one_call(self):
+        self.claude.push(*[{"chunks": ["long ", "text"], "stop_reason": "max_tokens"}] * 3)
+        bodies = [self.sclient.get(f"/s/{self.paper_id}") for _ in range(3)]
+        self.assertTrue(bodies[0].text.endswith("[오류] 응답이 너무 길어 잘렸습니다 (max_tokens)."))
+        self.assertEqual([b.status_code for b in bodies], [200, 502, 502])
+        self.assertEqual(self.claude.kinds, ["stream"])
+
+    def test_success_after_retry_clears_failure(self):
+        self.claude.push({"chunks": ["a"], "error": api_error("overloaded"), "error_at": 1}, {"chunks": ["ok"]})
+        self.assertRegex(self.sclient.get(f"/s/{self.paper_id}").text, r"\n\n\[오류\] [^\n]*overloaded$")
+        self.assertEqual(self.sclient.get(f"/s/{self.paper_id}?retry=true").text, "ok")
+        self.assertEqual(self.sclient.get(f"/s/{self.paper_id}").text, "ok")  # 디스크 적중
+        self.assertEqual(len(self.claude.calls), 2)
 
     def test_unknown_paper_404_before_streaming(self):
         self.assertEqual(self.sclient.get("/s/9999.99999").status_code, 404)
@@ -282,16 +318,43 @@ class FeatureLoaderTests(CoreTestCase):
             "helper_only.py": "VALUE = 1\n",
         })
         target = FastAPI()
-        with self.assertLogs("paper", "ERROR") as logs:
+        with self.assertLogs("paper", "WARNING") as logs:
             loaded = core.load_feature_routers(target, pkg, name)
-        self.assertEqual(loaded, ["helper_only", "ping"])
+        self.assertEqual(loaded, ["ping"], "router를 실제로 등록한 모듈만")
         self.assertTrue(any("broken.py" in m for m in logs.output))
+        self.assertTrue(any("helper_only.py" in m and "router" in m for m in logs.output), "router 없는 모듈은 경고")
         r = TestClient(target).get("/api/ping/1")
         self.assertEqual(r.json(), {"pong": "1", "model": core.MODEL})
 
     def test_real_features_package_loaded_at_import(self):
         self.assertIsInstance(core.FEATURES, list)
         self.assertTrue((Path(core.BASE_DIR) / "features" / "__init__.py").exists())
+
+    def test_feature_imported_before_app_still_registers_router(self):
+        # 테스트가 `from features.x import helper`로 시작해도 (순환 import) 라우터가 빠지지 않아야 함
+        path = Path(core.BASE_DIR) / "features" / "zz_import_order.py"
+        self.assertFalse(path.exists())
+        path.write_text(textwrap.dedent("""
+            from fastapi import APIRouter
+            import app as core
+            router = APIRouter()
+
+            def helper():
+                return 1
+
+            @router.get("/api/zz-import-order/ping")
+            async def ping():
+                return {"model": core.MODEL}
+        """), encoding="utf-8")
+        self.addCleanup(path.unlink, True)
+        code = ("from features.zz_import_order import helper\n"
+                "import app\n"
+                "from fastapi.testclient import TestClient\n"
+                "assert 'zz_import_order' in app.FEATURES, app.FEATURES\n"
+                "print(TestClient(app.app).get('/api/zz-import-order/ping').status_code)\n")
+        r = subprocess.run([sys.executable, "-c", code], cwd=core.BASE_DIR, capture_output=True, text=True, timeout=60,
+                           env={**os.environ, "ANTHROPIC_API_KEY": "test"})
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "200"), r.stderr[-2000:])
 
 
 class FeatureAssetTests(CoreTestCase):
@@ -311,7 +374,7 @@ class FeatureAssetTests(CoreTestCase):
         self.assertIn("text/javascript", js.headers["content-type"])
         self.assertIn("/* ---- zz.js ---- */\n;(function(){try{\nconst askBtn = 1;", js.text)
         self.assertIn('catch(e){console.error("[feature] zz.js", e)}})();', js.text)
-        self.assertNotIn("PR_SW", js.text, "*.sw.js는 페이지 번들에서 제외")
+        self.assertNotIn("/* ---- zz.sw.js ---- */", js.text, "*.sw.js는 페이지 번들에서 제외")
         self.assertIn("PR_SW", self.client.get("/features.sw.js").text)
         self.assertIn(".zz { color: red; }", self.client.get("/features.css").text)
 
@@ -363,6 +426,42 @@ class TemplateTests(CoreTestCase):
         self.assertLess(order[-1], html.index("/features.js"))
         self.assertLess(html.index("/features.js"), html.index("marked.min.js"), "기능이 CDN 스크립트를 기다리지 않게")
         self.assertNotIn("shouldBeRemoved", html)
+
+    def test_katex_css_is_not_render_blocking(self):
+        # CDN이 느리면 본문이 안 그려지던 문제: KaTeX CSS는 media=print → onload에 all (답변에만 필요)
+        html = self.client.get(f"/paper/{self.paper_id}").text
+        links = [l for l in html.split("<link")[1:] if "katex" in l.split(">")[0]]
+        self.assertTrue(links)
+        for l in links:
+            tag = l.split(">")[0]
+            self.assertIn('media="print"', tag)
+            self.assertIn("this.media='all'", tag)
+
+    def test_missing_paper_html_page_and_hook(self):
+        self.http.route("arxiv.org/html/2499.99999", "nope", status=404)
+        r = self.client.get("/paper/2499.99999")
+        self.assertEqual(r.status_code, 404)
+        self.assertIn("text/html", r.headers["content-type"])
+        self.assertIn("HTML 버전이 없습니다", r.text)
+        self.assertIn("https://arxiv.org/abs/2499.99999", r.text)
+        seen = []
+
+        async def broken(request, arxiv_id):
+            raise RuntimeError("x")
+
+        async def fallback(request, arxiv_id):
+            seen.append(arxiv_id)
+            return HTMLResponse(f"<p>abstract {arxiv_id}</p>") if core.parse_arxiv_id(arxiv_id) else None
+        with mock.patch.object(core, "PAPER_MISSING_HOOKS", []):
+            core.on_paper_missing(broken)
+            core.on_paper_missing(fallback)
+            with self.assertLogs("paper", "ERROR"):
+                r = self.client.get("/paper/2499.99999")
+            self.assertEqual((r.status_code, r.text), (200, "<p>abstract 2499.99999</p>"))
+            self.assertEqual(self.client.get(f"/paper/{self.paper_id}").status_code, 200)  # 있는 논문은 훅 없이
+            self.assertEqual(seen, ["2499.99999"])
+        r = self.client.get("/paper/<script>x")
+        self.assertNotIn("<script>x", r.text)
 
     def test_service_worker_and_manifest(self):
         r = self.client.get("/sw.js")
@@ -453,6 +552,50 @@ class SharedHelperTests(AsyncCoreTestCase):
         self.assertIsNone(await core.fetch_image(self.paper_id, "https://arxiv.org/html/2401.00001v1/x3.svg"))
 
 
+class SanitizeTests(AsyncCoreTestCase):
+    EVIL = ('<article class="ltx_document"><h1 class="ltx_title_document">T</h1>'
+            '<p>x <a href="JaVaScRiPt:alert(1)">a</a> <a href=" java\nscript:alert(4)">b</a> <a href="#S1">ok</a>'
+            '<a href="mailto:a@b.c">m</a> <img src=x onerror="alert(1)"><img src="data:image/png;base64,AAAA">'
+            '<svg><a xlink:href="javascript:alert(2)"><text>t</text></a><animate attributeName="href" to="javascript:1"/></svg>'
+            '<math href="javascript:alert(5)" alttext="x"><mi>x</mi></math>'
+            '<iframe src="javascript:alert(3)"></iframe><object data="x"></object><form action="javascript:1"><input></form>'
+            '<span onclick="alert(1)" class="keep">k</span></p></article>')
+
+    def test_clean_article_strips_script_vectors(self):
+        html = core.clean_article(self.EVIL, "https://arxiv.org/html/2401.00009")["html"].lower()
+        for bad in ("javascript", "onerror", "onclick", "<iframe", "<object", "<form", "<animate", "alert("):
+            self.assertNotIn(bad, html)
+        for good in ('href="#s1"', 'href="mailto:a@b.c"', 'src="https://arxiv.org/html/2401.00009/x"',
+                     'src="data:image/png;base64,aaaa"', 'class="keep"', "<math"):
+            self.assertIn(good, html)
+
+    def test_fixture_unchanged_by_sanitizer(self):
+        # 정상 LaTeXML 출력은 링크·그림·수식이 그대로
+        raw = core.BeautifulSoup(fixture("sample_ltx.html"), "html.parser").find("article")
+        cleaned = core.BeautifulSoup(self.paper["html"], "html.parser")
+        for sel in ("a[href]", "img[src]", "math", "svg", "figure"):
+            self.assertEqual(len(cleaned.select(sel)), len(raw.select(sel)), sel)
+        self.assertIn('href="https://github.com/example/sparse-moe"', self.paper["html"])
+        self.assertIn('href="#bib.bib1"', self.paper["html"])
+
+    async def test_old_disk_cache_is_recleaned(self):
+        aid = "2401.00009"
+        core.papers.pop(aid, None)
+        self.addCleanup(core.papers.pop, aid, None)
+        old = {"title": "Old title", "html": '<article class="ltx_document"><a href="javascript:alert(1)">a</a>'
+                                              '<img src="https://arxiv.org/html/2401.00009/x1.png" onerror="alert(1)"></article>',
+               "text": "a"}
+        core.write_json(core.paper_path(aid), old)
+        paper = await core.get_paper(aid)
+        self.assertNotIn("javascript", paper["html"])
+        self.assertNotIn("onerror", paper["html"])
+        self.assertIn('src="https://arxiv.org/html/2401.00009/x1.png"', paper["html"])
+        self.assertEqual(paper["title"], "Old title")
+        self.assertEqual(paper["v"], core.CLEAN_VERSION)
+        self.assertEqual(core.read_json(core.paper_path(aid))["v"], core.CLEAN_VERSION)
+        self.assertEqual(self.http.calls, [], "다시 받지 않고 저장본을 정리")
+
+
 class FixtureCoverageTests(CoreTestCase):
     """공용 픽스처가 모든 기능 브리프가 기대는 구조를 갖췄는지 (기능 브랜치는 이 파일을 고치지 말 것)"""
 
@@ -517,8 +660,11 @@ class PrewarmTests(CoreTestCase):
 
         async def hook(arxiv_id):
             seen.append(arxiv_id)
+        # 기능이 등록한 실제 훅(overview 등)은 빼고 이 테스트의 훅만 (그 훅들의 Claude 호출이 섞이지 않게)
+        patch = mock.patch.object(core, "PREWARM_HOOKS", [])
+        patch.start()
+        self.addCleanup(patch.stop)
         core.on_prewarm(hook)
-        self.addCleanup(core.PREWARM_HOOKS.remove, hook)
         for _ in range(2):
             self.assertEqual(self.client.post(f"/api/prewarm/{self.paper_id}").json(), {"ok": True})
         self.assertEqual(self.claude.kinds, ["create"])

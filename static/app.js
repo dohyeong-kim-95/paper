@@ -52,7 +52,28 @@
     return String(text || "").split(/(?<=[.!?。！？])\s+|\n+/).map(x => x.trim()).filter(Boolean);
   }
 
-  const api = { BASE_PRESETS, SLOTS, ERROR_TAIL, rankPresets, selInfoFromText, buildPayload, splitSentences };
+  // 시트 세션 만들기. 세션 훅은 새 세션(history 없음)에서만 실행: 저장된 대화를 그때의 고정 필드
+  // (selection·context·section·extra·endpoint)로 이어가면 훅이 덧붙인 것이 이미 들어 있으므로 다시 붙이지 않음
+  // → 첫 user 턴이 바이트까지 같아 캐시 적중
+  function makeSession(opts = {}, arxivId = null, hooks = [], onErr = () => {}) {
+    const selection = opts.selection || "";
+    const history = (opts.history || []).map(t => ({ role: t.role, content: String(t.content) }));
+    const s = {
+      id: Math.random().toString(36).slice(2), arxivId,
+      quote: opts.quote ?? selection, selection,
+      context: opts.context || "", section: opts.section || "",
+      endpoint: opts.endpoint || "/api/ask", extra: { ...(opts.extra || {}) },
+      presets: opts.presets || null, title: opts.title || "질문",
+      selInfo: opts.selInfo || (selection ? selInfoFromText(selection) : null),
+      history, shown: (opts.shown || []).slice(),
+      meta: (opts.meta || []).map(m => ({ label: (m && m.label) || null, presetId: (m && m.presetId) || null, via: (m && m.via) || null })),
+      origin: opts.origin || null, continued: history.length > 0,
+    };
+    if (!s.continued) for (const hook of hooks) { try { hook(s); } catch (e) { onErr(e); } }
+    return s;
+  }
+
+  const api = { BASE_PRESETS, SLOTS, ERROR_TAIL, rankPresets, selInfoFromText, buildPayload, splitSentences, makeSession };
   if (typeof module !== "undefined") module.exports = api;
   if (typeof document === "undefined") return;
 
@@ -131,9 +152,11 @@
     const sectionEl = startEl && startEl.closest("section");
     const latex = mathsIn(range).map(m => m.getAttribute("alttext") || "").filter(Boolean);
     const prose = base.text.replace(/\$[^$]*\$/g, " ").trim();
+    const anchored = !!(q && q.quote); // 번역(.tr-ko)만 고른 선택은 색인 밖이라 저장할 위치가 없음
     return {
       ...base, raw, range,
-      start: q ? q.start : null, end: q ? q.end : null, prefix: q ? q.prefix : "", suffix: q ? q.suffix : "",
+      start: anchored ? q.start : null, end: anchored ? q.end : null, prefix: anchored ? q.prefix : "", suffix: anchored ? q.suffix : "",
+      inTranslation: !!(startEl && startEl.closest(".tr-ko")),
       latex, isMath: latex.length > 0 && prose.split(/\s+/).filter(Boolean).length <= 2,
       paragraphEl: para || null, paraId: para ? para.id || para.closest("[id]")?.id || null : null,
       sectionEl: sectionEl || null, sectionId: sectionEl ? sectionEl.id : null,
@@ -211,9 +234,21 @@
     if (selBar) selBar.hidden = true;
     body.classList.remove("pr-sel-active");
   }
+  // 선택 버튼 줄 켜기/끄기 (reading-settings도 이것을 부름 — pr:app:selbar를 직접 쓰지 말 것: 헤더 버튼 이름이 안 바뀜)
+  let selBarBtn = null;
+  function setSelBar(on) {
+    on = !!on;
+    if (store) store.set("app:selbar", on);
+    if (selBarBtn) selBarBtn.setLabel(on ? "선택 버튼 끄기" : "선택 버튼 켜기");
+    if (!on) hideSelBar(); else if (lastSel) showSelBar();
+  }
 
   // ---------- 본문 탭 처리기 (우선순위 높은 것부터 하나만) ----------
-  // 규칙: 선택이 있거나 방금 선택을 해제한 탭은 무시, e.defaultPrevented면 무시, 처리하면 preventDefault
+  // 규칙: e.defaultPrevented면 무시, 기능 UI(.pr-ui) 안의 조작 요소(버튼·입력·링크…)는 무시 (자기 리스너만 실행 →
+  // 그 버튼이 연 시트를 '내려두기'가 바로 닫지 않음). 선택이 있거나 방금 해제한 탭은 allowWithSelection 처리기만.
+  // 번역문 안에 복제된 본문 링크(a.ltx_ref)는 본문 링크처럼 처리기로 감 (ref-peek, cite-cards). 처리하면 preventDefault
+  const CONTROL = "button, input, select, textarea, label, summary, [role=button], a:not(.ltx_ref)";
+  const isFeatureControl = el => { const c = el.closest(CONTROL); return !!(c && c.closest(".pr-ui")); };
   const taps = [];
   function addTapHandler(t) {
     const i = taps.findIndex(x => x.id === t.id);
@@ -221,9 +256,12 @@
     taps.sort((a, b) => (b.priority || 0) - (a.priority || 0));
   }
   document.addEventListener("click", e => {
-    if (e.defaultPrevented || e.button || !paperEl || !paperEl.contains(e.target)) return;
-    if (downHadSel || liveSel() || justSelected()) return;
+    const target = e.target;
+    if (e.defaultPrevented || e.button || !paperEl || !(target instanceof Element) || !paperEl.contains(target)) return;
+    if (isFeatureControl(target)) return;
+    const withSel = downHadSel || !!liveSel() || justSelected();
     for (const t of taps) {
+      if (withSel && !t.allowWithSelection) continue;
       let hit;
       try { hit = t.test(e); } catch (x) { err(t.id, x); continue; }
       if (hit) {
@@ -339,6 +377,8 @@
     current = { ctrl, s, t };
     setStreaming(true);
     t.turn.querySelector(".pr-retry")?.remove();
+    // '이어서 받기'는 마지막 턴에서만: 새 턴이 시작되면 이전 실패 턴의 버튼은 없앰 (기록 순서·동시 스트림 방지)
+    answerEl.querySelectorAll(".pr-retry button").forEach(b => b.remove());
     setAnswer(t.a, "…");
     announce("답변을 생성하는 중입니다");
     emit("paper:ask", { payload, session: s, endpoint: s.endpoint });
@@ -372,13 +412,12 @@
       if (ctrl.signal.aborted) { t.turn.remove(); return; } // 새 질문·닫기로 중단 → 기록에도 화면에도 없음
       failed = e.http ? `[오류] ${e.message}` : "[연결 끊김] 네트워크가 끊겼거나 앱이 백그라운드로 갔습니다.";
     }
-    if (current && current.ctrl === ctrl) current = null;
-    setStreaming(false);
+    if (current && current.ctrl === ctrl) { current = null; setStreaming(false); }
     if (failed) {
       renderNow(t.a, text.replace(ERROR_TAIL, ""));
-      // 같은 payload를 다시 보냄 → 앞부분은 캐시라 빠름
+      // 같은 payload를 다시 보냄 → 앞부분은 캐시라 빠름. 진행 중인 스트림이 있으면 먼저 중단 (ask와 같은 규칙)
       t.a.after(h("div", { class: "pr-retry pr-ui" }, h("span", { text: failed }),
-        h("button", { type: "button", text: "이어서 받기", onclick: () => runTurn(s, payload, t, opts) })));
+        h("button", { type: "button", text: "이어서 받기", onclick: () => { abortCurrent(); runTurn(s, payload, t, opts); } })));
       announce("답변이 끊겼습니다");
       emit("paper:answer-error", { session: s, payload, error: failed, turnEl: t.turn });
       return;
@@ -430,8 +469,9 @@
   }
   function showSheet() {
     pill.hidden = true;
-    // peek에서 시트를 열면(인용 카드의 '왜 인용?' 등) peek를 먼저 닫음 — 시트(z 20)가 peek(z 25) 밑에 깔리지 않게
-    while (UI.topLayer() && UI.topLayer().kind === "peek") UI.topLayer().close("sheet");
+    // 시트(z 20)보다 위에 뜨는 오버레이(peek z 25, 그림 뷰어 z 30, 목차 서랍 …)는 먼저 닫음 (reason "sheet") —
+    // 시트가 그 밑에 깔리지 않게. 점프('↩ 돌아가기')와 keepOnSheet 레이어(화면 위쪽 찾기 줄 등)는 그대로
+    UI.closeLayers(l => l.kind !== "jump" && l.kind !== "sheet" && !l.keepOnSheet, "sheet");
     if (!sheet.hidden) return;
     const prev = document.activeElement;
     restoreFocus = () => { if (prev && prev.isConnected) try { prev.focus({ preventScroll: true }); } catch { /* 무시 */ } };
@@ -463,18 +503,7 @@
 
   function openSheet(opts = {}) {
     if (!sheet) { console.warn("[PaperApp] openSheet: 이 페이지에는 질문 시트가 없습니다"); return null; }
-    const selection = opts.selection || "";
-    const history = (opts.history || []).map(t => ({ role: t.role, content: String(t.content) }));
-    const s = {
-      id: Math.random().toString(36).slice(2), arxivId,
-      quote: opts.quote ?? selection, selection,
-      context: opts.context || "", section: opts.section || "",
-      endpoint: opts.endpoint || "/api/ask", extra: { ...(opts.extra || {}) },
-      presets: opts.presets || null, title: opts.title || "질문",
-      selInfo: opts.selInfo || (selection ? selInfoFromText(selection) : null),
-      history, shown: (opts.shown || []).slice(), meta: [], origin: opts.origin || null,
-    };
-    for (const hook of sessionHooks) { try { hook(s); } catch (e) { err(e); } }
+    const s = makeSession(opts, arxivId, sessionHooks, err);
     discardSession(false);
     session = s;
     renderSession(s);
@@ -510,13 +539,17 @@
   }
 
   // ---------- 시트 조작: 손잡이 끌기(반/전체), 바깥 탭·스와이프는 내려두기, 키보드 위로 올리기 ----------
+  // --kb(키보드 높이), --vvh(보이는 높이)는 :root에 → 시트와 peek(입력칸이 있는 메모·찾기 등) 모두 키보드 위로 (iOS)
   function fitViewport() {
     const vv = window.visualViewport;
-    if (!vv || !sheet) return;
+    if (!vv) return;
     const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-    sheet.style.setProperty("--kb", `${Math.round(kb)}px`);
-    sheet.style.setProperty("--vvh", `${Math.round(vv.height)}px`);
+    const root = document.documentElement.style;
+    root.setProperty("--kb", `${Math.round(kb)}px`);
+    root.setProperty("--vvh", `${Math.round(vv.height)}px`);
   }
+  window.visualViewport?.addEventListener("resize", fitViewport);
+  window.visualViewport?.addEventListener("scroll", fitViewport);
 
   if (sheet) {
     const handle = sheet.querySelector(".sheet-grab");
@@ -538,12 +571,10 @@
       qInput.value = "";
       if (v) ask(v, { via });
     });
-    window.visualViewport?.addEventListener("resize", fitViewport);
-    window.visualViewport?.addEventListener("scroll", fitViewport);
-    // 본문 빈 곳을 탭하면 시트를 내려둠 (가장 낮은 우선순위, 링크는 제외)
+    // 본문 빈 곳을 탭하면 시트를 내려둠 (가장 낮은 우선순위, 링크·기능 UI(.pr-ui) 위는 제외)
     addTapHandler({
       id: "app:minimize", priority: -1000,
-      test: e => !sheet.hidden && !e.target.closest("a[href]"),
+      test: e => !sheet.hidden && !e.target.closest("a[href], .pr-ui"),
       handle: () => minimizeSheet(),
     });
     addSelectionAction({
@@ -551,12 +582,11 @@
       onClick: s => openSheet({ quote: s.text, selection: s.text, context: s.context, section: s.sectionTitle, selInfo: s }),
     });
     if (page === "paper") {
-      const btn = UI.addBarButton({
+      selBarBtn = UI.addBarButton({
         id: "app:selbar", label: selBarEnabled() ? "선택 버튼 끄기" : "선택 버튼 켜기",
         onClick: () => {
           const on = !selBarEnabled();
-          store.set("app:selbar", on);
-          btn.setLabel(on ? "선택 버튼 끄기" : "선택 버튼 켜기");
+          setSelBar(on);
           UI.toast(on ? "텍스트를 선택하면 버튼이 나타납니다" : "선택 버튼을 껐습니다");
         },
       });
@@ -595,6 +625,13 @@
       u.onerror = ev => { if (cur === c && !c.paused && !["interrupted", "canceled"].includes(ev.error)) end(c, { error: ev.error }); };
       synth.speak(u);
     }
+    // iOS: 사용자 탭 안에서 한 번 말해야 그 뒤 자동 읽기(음성 질문의 답 등)가 소리 남. voice.js가 마이크 탭에서 부름
+    let primed = false;
+    function prime() {
+      if (!synth || primed) return;
+      primed = true;
+      try { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; synth.speak(u); } catch { /* 무시 */ }
+    }
     // 첫 speak()는 탭 핸들러 안에서 동기로 불러야 iOS에서 소리가 남
     function speak(text, opts = {}) {
       if (!synth) { opts.onEnd && opts.onEnd({ error: "unsupported" }); return false; }
@@ -620,7 +657,7 @@
     function seek(i) { if (!cur) return; cur.i = Math.max(0, Math.min(i, cur.chunks.length - 1)); const p = cur.paused; cur.paused = true; try { synth.cancel(); } catch { /* 무시 */ } cur.paused = p; if (!p) next(cur); }
     window.addEventListener("pagehide", () => stop("pagehide"));
     return {
-      speak, stop, pause, resume, seek, splitSentences, voiceFor,
+      speak, stop, pause, resume, seek, prime, splitSentences, voiceFor,
       get supported() { return !!synth; },
       get speaking() { return !!cur && !cur.paused; },
       get paused() { return !!cur && cur.paused; },
@@ -628,10 +665,15 @@
     };
   })();
 
+  // 오프라인 저장 대상 목록: 기능이 이미 받아 둔(생성이 끝난) 캐시 가능 GET 주소를 알림.
+  // offline-save는 이것만 다시 받아 API 캐시에 넣음 (사용자가 안 연 기능의 생성·과금을 일으키지 않게)
+  const offlineUrls = new Set();
+
   window.PaperApp = Object.assign(api, {
     page, arxivId, baseId, warm, idle,
     registerFeature, has: id => features.has(id), feature: id => features.get(id),
-    sel, selectRange, justSelected, addSelectionAction, addTapHandler,
+    addOfflineUrl: url => void offlineUrls.add(String(url)), offlineUrls: () => [...offlineUrls],
+    sel, selectRange, justSelected, addSelectionAction, addTapHandler, setSelBar,
     addPreset, removePreset, presets: () => presets.slice(),
     addAskHook: fn => void askHooks.push(fn),
     addSessionHook: fn => void sessionHooks.push(fn),

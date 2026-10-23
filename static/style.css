@@ -60,6 +60,7 @@ button, input { font: inherit; }
 ::highlight(pa-flash) { background-color: rgba(250, 204, 21, .55); }
 .pa-flash { animation: pa-flash 1.5s ease-out; }
 @keyframes pa-flash { from { background-color: rgba(250, 204, 21, .55); } to { background-color: transparent; } }
+/* CSS Highlight API가 없을 때 paint()의 대체 <mark> 기본색. 기능은 mark.pa-mark-<name>으로 덮어쓰거나 paint(…, {fallback:false}) */
 mark.pa-mark { background: rgba(250, 204, 21, .35); color: inherit; }
 
 /* 선택 버튼 줄: 화면 아래 고정 (기본 선택 메뉴와 안 겹치게), 가로 스크롤 */
@@ -141,11 +142,13 @@ mark.pa-mark { background: rgba(250, 204, 21, .35); color: inherit; }
 
 /* peek: 보조 바텀시트 */
 .pr-peek-backdrop { position: fixed; inset: 0; z-index: var(--z-peek); background: rgba(0,0,0,.25); }
-.pr-peek { position: fixed; left: 0; right: 0; bottom: 0; z-index: var(--z-peek); max-height: 60vh; overflow-y: auto;
+/* peek도 키보드 위로 (메모·찾기 입력칸, iOS): --kb/--vvh는 app.js가 :root에 둠 */
+.pr-peek { position: fixed; left: 0; right: 0; bottom: var(--kb, 0px); z-index: var(--z-peek);
+  max-height: min(60vh, calc(var(--vvh, 100vh) - 56px)); overflow-y: auto;
   overscroll-behavior: contain; padding: 0 16px calc(16px + env(safe-area-inset-bottom)); background: var(--card); color: var(--fg);
   border-radius: 16px 16px 0 0; box-shadow: 0 -4px 24px rgba(0,0,0,.3); transition: transform .2s ease; }
 .pr-peek:focus { outline: none; }
-.pr-peek-large { max-height: 85vh; }
+.pr-peek-large { max-height: min(85vh, calc(var(--vvh, 100vh) - 56px)); }
 .pr-peek-head { position: sticky; top: 0; display: flex; align-items: center; gap: 8px; padding: 18px 0 6px; background: var(--card);
   touch-action: none; }
 .pr-peek-head .pr-handle { position: absolute; left: 50%; top: 7px; transform: translateX(-50%); }
