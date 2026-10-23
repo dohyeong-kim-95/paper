@@ -1,0 +1,11 @@
+/* answer-tools: 답변 근거 칩(📍 본문 보기) · 답변 도구(복사·읽어주기·공유·👍👎) */
+/* 근거: 도구 줄 맨 앞의 전체 너비 줄, 인용은 한 줄 말줄임 */
+.turn-tools .at-ev { flex-basis: 100%; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.turn-tools .at-ev-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-height: 30px; text-align: left; }
+.at-ev-pin { flex: none; color: var(--accent); }
+.at-ev-q { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-style: italic; }
+/* 본문에서 못 찾은 인용: 칩 없이 흐리게 */
+.at-ev-miss { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 4px;
+  font-size: 12px; font-style: italic; color: var(--muted); opacity: .8; }
+.at-actions { display: contents; }
+.turn-tools .at-tts[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
