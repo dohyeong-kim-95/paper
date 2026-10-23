@@ -1,0 +1,58 @@
+/* toc-progress: 헤더의 지금 섹션 이름 · 진행 막대(헤더 아래 띠 첫 줄) · 목차/구조 서랍 */
+#bar-section { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+  -webkit-tap-highlight-color: transparent; }
+
+/* 진행 막대: 보이는 건 3px, 누르는 자리는 위로 7px 더 (헤더 아래쪽 여백 위, 본문 글자는 가리지 않음) */
+.toc-progress { position: relative; display: block; width: 100%; height: 10px; margin: -7px 0 0; padding: 0; border: 0;
+  background: none; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.toc-track { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; overflow: hidden; background: var(--line); }
+.toc-fill { position: absolute; inset: 0; background: var(--accent); transform: scaleX(0); transform-origin: 0 50%;
+  transition: transform .12s linear; }
+/* 섹션 경계: 막대를 끊는 틈 */
+.toc-tick { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--bg); }
+.toc-progress:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* 서랍: 왼쪽에서 (배경 25, 서랍 26 → peek는 그 위로) */
+.toc-backdrop { position: fixed; inset: 0; z-index: var(--z-peek); background: rgba(0,0,0,.3); opacity: 0;
+  transition: opacity .2s ease; touch-action: none; }
+.toc-drawer { position: fixed; top: 0; bottom: 0; left: 0; z-index: calc(var(--z-peek) + 1); width: min(86vw, 380px);
+  display: flex; flex-direction: column; background: var(--card); color: var(--fg); box-shadow: 4px 0 24px rgba(0,0,0,.3);
+  padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom) env(safe-area-inset-left);
+  transform: translateX(-100%); transition: transform .2s ease; touch-action: pan-y; }
+.toc-backdrop.toc-in { opacity: 1; }
+.toc-drawer.toc-in { transform: none; }
+.toc-drawer:focus { outline: none; }
+.toc-head { display: flex; align-items: center; gap: 8px; padding: 10px 8px 4px 12px; }
+.toc-tabs { flex: 1; display: flex; gap: 4px; }
+.toc-tab { padding: 6px 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--fg); font-size: 14px; }
+.toc-tab[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.toc-x { border: 0; background: none; color: var(--fg); font-size: 20px; padding: 4px 8px; }
+.toc-info { padding: 2px 16px 8px; font-size: 13px; color: var(--muted); border-bottom: 1px solid var(--line); }
+.toc-body { position: relative; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 6px 6px 24px; }
+.toc-ul { list-style: none; margin: 0; padding: 0; }
+.toc-ul .toc-ul { padding-left: 14px; }
+.toc-item { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px;
+  background: none; color: var(--fg); font-size: 15px; line-height: 1.35; text-align: left; }
+.toc-l3 > .toc-item, .toc-l3 > .toc-row .toc-item { font-size: 14px; padding-top: 7px; padding-bottom: 7px; }
+.toc-t { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.toc-min { flex: none; font-size: 12px; color: var(--muted); }
+.toc-read { color: var(--muted); }
+.toc-item[aria-current] { background: var(--bg); color: var(--accent); font-weight: 600; }
+.toc-empty, .toc-hint { margin: 12px; font-size: 14px; color: var(--muted); }
+
+/* 구조도: ▸ 접기/펼치기 + 제목, 그 아래 요약 한 줄 · 그림·표 · 하위 섹션 */
+.toc-row { display: flex; align-items: flex-start; }
+.toc-row .toc-item { flex: 1; min-width: 0; }
+.toc-chev, .toc-chev-sp { flex: none; width: 28px; height: 38px; }
+.toc-chev { border: 0; background: none; color: var(--muted); padding: 0; }
+/* 글꼴과 무관한 꺾쇠 (› 접힘, ⌄ 펼침) */
+.toc-chev::before { content: ""; display: inline-block; width: 7px; height: 7px; border: solid currentColor; border-width: 0 2px 2px 0;
+  transform: rotate(-45deg); transition: transform .15s ease; }
+.toc-chev[aria-expanded="true"]::before { transform: translateY(-2px) rotate(45deg); }
+.toc-kids { list-style: none; margin: 0 0 4px; padding: 0 0 0 28px; }
+.toc-kids[hidden] { display: none; }
+.toc-kids .toc-ul { padding-left: 0; }
+.toc-gist, .toc-fig { display: flex; gap: 6px; width: 100%; padding: 4px 10px; border: 0; border-radius: 6px; background: none;
+  color: var(--muted); font-size: 13px; line-height: 1.4; text-align: left; }
+.toc-gist { font-style: italic; }
+.toc-fig-i { flex: none; width: 1.2em; text-align: center; color: var(--accent); }
