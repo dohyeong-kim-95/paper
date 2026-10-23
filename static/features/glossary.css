@@ -1,0 +1,54 @@
+/* glossary: 용어 점선 밑줄(CSS Highlight, DOM 변경 없음) · 기호 있는 수식 · 뜻 peek · 목록 · 뜻 칩 · 루비 병기 */
+::highlight(gl-term) { text-decoration-line: underline; text-decoration-style: dotted; text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px; }
+#paper math.gl-sym { border-bottom: 1px dotted var(--accent); cursor: pointer; }
+
+/* 루비 병기: 감싼 <ruby>는 본문, <rt>만 .pr-ui */
+#paper ruby.gl-ruby { ruby-position: over; }
+#paper ruby.gl-ruby > rt { font-size: .55em; line-height: 1.1; color: var(--muted); font-weight: 400; font-style: normal;
+  letter-spacing: 0; text-indent: 0; }
+
+/* peek 안 설명 */
+.gl-peek { display: flex; flex-direction: column; gap: 6px; }
+.gl-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.gl-ko { font-size: 1.15em; font-weight: 600; }
+.gl-alias { font-size: 13px; color: var(--muted); }
+.gl-def { margin: 0; line-height: 1.55; }
+.gl-note { margin: 0; font-size: 12px; color: var(--muted); }
+.gl-math { overflow-x: auto; padding: 4px 0; font-size: 1.05em; }
+.gl-tex .katex { font-size: 1.05em; }
+.gl-detail { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.gl-go, .gl-use, .gl-sub, .gl-retry, .gl-unknow { padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--bg); color: var(--fg); font-size: 13px; }
+.gl-go { color: var(--accent); }
+.gl-uses { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
+.gl-uses-n { color: var(--muted); }
+.gl-use { display: inline-flex; gap: 6px; align-items: center; max-width: 100%; }
+.gl-use-t { max-width: 14em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gl-use-n { color: var(--muted); font-size: 12px; }
+/* 하위 기호 칩 (x_i^t / x) */
+.gl-subs { display: flex; flex-wrap: wrap; gap: 6px; }
+.gl-sub[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--card); }
+
+/* '용어' 목록 */
+.gl-list { display: flex; flex-direction: column; gap: 8px; }
+.gl-q { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg); color: var(--fg); }
+.gl-items h3 { margin: 12px 0 4px; font-size: 13px; color: var(--muted); font-weight: 600; }
+.gl-row { display: flex; gap: 6px; align-items: center; border-bottom: 1px solid var(--line); }
+.gl-item { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 8px 2px; border: 0;
+  background: none; color: var(--fg); text-align: left; }
+.gl-item-t { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.gl-item-ko { color: var(--accent); font-size: 14px; }
+.gl-n { color: var(--muted); font-size: 12px; }
+.gl-item-d { font-size: 13px; color: var(--muted); line-height: 1.45; }
+.gl-unknow { flex: none; }
+.gl-empty { color: var(--muted); font-size: 14px; }
+
+/* 뜻 칩: 헤더 아래 띠(PaperUI.topSlot("glossary")) */
+.gl-chip { display: flex; align-items: center; gap: 8px; padding: 5px 12px 5px 16px; background: var(--card);
+  border-bottom: 1px solid var(--line); font-size: 13px; }
+.gl-chip-t { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gl-chip-d { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.gl-chip button { flex: none; border: 0; background: none; color: var(--accent); font-size: 13px; padding: 2px 4px; }
+.gl-chip .gl-chip-x { color: var(--muted); }
