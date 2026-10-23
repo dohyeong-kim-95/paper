@@ -49,3 +49,5 @@ button, input { font: inherit; }
 /* 음성 입력 중 */
 #ask-form #mic.recording { background: #dc2626; animation: pulse 1s ease-in-out infinite alternate; }
 @keyframes pulse { to { opacity: .5; } }
+.answer .q { width: fit-content; max-width: 85%; margin: 12px 0 6px auto; padding: 6px 12px;
+  border-radius: 14px 14px 4px 14px; background: var(--accent); color: #fff; font-size: 14px; }

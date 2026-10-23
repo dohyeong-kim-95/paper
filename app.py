@@ -1,6 +1,7 @@
 import json
 import re
 from pathlib import Path
+from typing import Literal
 
 import anthropic
 import httpx
@@ -156,20 +157,27 @@ async def api_prewarm(arxiv_id: str):
     return {"ok": True}
 
 
+class Turn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class Ask(BaseModel):
     arxiv_id: str
     selection: str = ""
     question: str
+    history: list[Turn] = []  # 같은 시트에서 이어지는 이전 대화
 
 
 @app.post("/api/ask")
 async def ask(body: Ask):
     paper = await get_paper(body.arxiv_id)
-    content = (
-        f"<highlight>\n{body.selection}\n</highlight>\n\n{body.question}"
-        if body.selection
-        else body.question
-    )
+    messages = [t.model_dump() for t in body.history]
+    messages.append({"role": "user", "content": body.question})
+    # 하이라이트는 첫 user 턴에만 (매 요청 같은 바이트 → 대화 앞부분 캐시 적중)
+    if body.selection:
+        first = messages[0]
+        first["content"] = f"<highlight>\n{body.selection}\n</highlight>\n\n{first['content']}"
 
     async def gen():
         try:
@@ -177,7 +185,8 @@ async def ask(body: Ask):
                 **REQUEST_OPTS,
                 max_tokens=4000,
                 system=system_blocks(paper),
-                messages=[{"role": "user", "content": content}],
+                messages=messages,
+                cache_control={"type": "ephemeral"},  # 늘어나는 대화 꼬리도 자동 캐시
             ) as stream:
                 async for text in stream.text_stream:
                     yield text
