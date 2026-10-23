@@ -1,0 +1,60 @@
+/* audio-summary: 듣기 (지금 문장 칠하기, 읽는 문단, ▶ 여기부터, 재생기, 고르기·대본 peek) */
+::highlight(as-sentence) { background-color: rgba(37, 99, 235, .2); }
+mark.pa-mark-as-sentence { background: rgba(37, 99, 235, .2); color: inherit; }
+/* 읽는 문단: 글자 배치는 그대로 두고 옅은 바탕만 */
+.paper .ltx_para.as-reading { border-radius: 6px; background: rgba(37, 99, 235, .05); box-shadow: 0 0 0 6px rgba(37, 99, 235, .05); }
+
+/* 문단 첫 줄 왼쪽의 ▶ (본문 읽기 중에만) */
+.paper .as-here { float: left; display: inline-flex; align-items: center; justify-content: center; width: 1.4em; height: 1.4em;
+  margin: .1em .35em 0 0; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--card);
+  color: var(--accent); font-size: .8em; line-height: 1; cursor: pointer; }
+.paper .as-here:active { background: var(--accent); color: #fff; }
+
+/* 재생기: 아래쪽 줄 위 (PaperUI.bottomSlot) */
+.as-player { position: relative; max-width: 560px; width: 100%; margin: 0 auto; padding: 8px 12px 10px; border-radius: 16px;
+  background: var(--card); color: var(--fg); border: 1px solid var(--line); box-shadow: 0 4px 18px rgba(0, 0, 0, .22); font-size: 14px; }
+.as-top { display: flex; align-items: center; gap: 8px; }
+.as-mode { font-size: 13px; }
+.as-pos { flex: 1; color: var(--muted); font-size: 12px; }
+.as-player button { border: 0; background: none; color: var(--fg); font: inherit; }
+.as-player .as-x { padding: 2px 6px; color: var(--muted); }
+.as-player .as-cur { display: block; width: 100%; margin: 4px 0 6px; padding: 6px 8px; border-radius: 10px; text-align: left; line-height: 1.45;
+  background: var(--bg); }
+.as-cur-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.as-cur-text, .as-pop-text, .as-script, .as-opt { word-break: keep-all; overflow-wrap: anywhere; }
+.as-player .as-cur:disabled { color: var(--muted); }
+.as-ctl { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.as-ctl button { min-width: 40px; min-height: 36px; padding: 4px 8px; border-radius: 999px; font-size: 16px; }
+.as-player .as-play { min-width: 52px; background: var(--accent); color: #fff; }
+.as-player .as-play:disabled { opacity: .5; }
+.as-player .as-rate, .as-player .as-script-btn { font-size: 13px; border: 1px solid var(--line); }
+.as-ctl [hidden] { display: none; }
+
+/* 5초 미니 팝업: 이 문장 하이라이트 / 질문 */
+.as-pop { position: absolute; left: 8px; right: 8px; bottom: calc(100% + 6px); display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 10px; border-radius: 12px; background: var(--fg); color: var(--bg); box-shadow: 0 4px 16px rgba(0, 0, 0, .25); }
+.as-pop[hidden] { display: none; }
+.as-pop-text { font-size: 13px; line-height: 1.4; opacity: .85; }
+.as-pop-btns { display: flex; gap: 8px; }
+.as-player .as-pop button { padding: 6px 12px; border-radius: 999px; background: var(--bg); color: var(--fg); font-size: 14px; }
+.as-pop button[hidden] { display: none; }
+
+/* 고르기 peek */
+.as-opts { display: flex; flex-direction: column; gap: 8px; }
+.as-opt { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--fg); text-align: left; font: inherit; }
+.as-sub { color: var(--muted); font-size: 13px; }
+.as-ready { position: absolute; top: 12px; right: 14px; color: var(--accent); font-size: 12px; }
+.as-rates { display: flex; align-items: center; gap: 6px; margin-top: 14px; font-size: 14px; }
+.as-rates > span { color: var(--muted); margin-right: 4px; }
+.as-rates button { padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--fg); font: inherit; font-size: 13px; }
+.as-rates button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.as-hint { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+.as-hint:empty { display: none; }
+
+/* 대본 peek: 문장을 누르면 거기부터 */
+.as-script { line-height: 1.75; }
+.as-script .as-s { padding: 1px 2px; border-radius: 4px; cursor: pointer; }
+.as-script .as-s::after { content: " "; }
+.as-script .as-s.as-now { background: rgba(37, 99, 235, .2); }
+.as-fb { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--muted); font-size: 13px; }
