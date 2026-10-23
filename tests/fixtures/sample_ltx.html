@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sparse Mixtures for Everyone: A Test Paper</title>
+<base href="/html/2401.00001v1/">
+<script>window.shouldBeRemoved = true;</script>
+</head>
+<body>
+<div class="ltx_page_main">
+<div class="ltx_page_content">
+<article class="ltx_document ltx_authors_1line">
+<h1 class="ltx_title ltx_title_document">Sparse Mixtures for Everyone: A Test Paper</h1>
+<div class="ltx_authors">
+<span class="ltx_creator ltx_role_author"><span class="ltx_personname">Alice Kim</span></span><span class="ltx_author_before">, </span><span class="ltx_creator ltx_role_author"><span class="ltx_personname">Bob Lee</span></span><span class="ltx_author_before">, </span><span class="ltx_creator ltx_role_author"><span class="ltx_personname">Carol Park</span></span><span class="ltx_author_before">, </span><span class="ltx_creator ltx_role_author"><span class="ltx_personname">Dan Choi</span></span>
+</div>
+<div class="ltx_abstract">
+<h6 class="ltx_title ltx_title_abstract">Abstract</h6>
+<p class="ltx_p">We propose a sparse mixture of experts model that routes each token to two experts. The model matches a dense baseline while using far fewer FLOPs per token.</p>
+<p class="ltx_p">Code and checkpoints are released to the community.</p>
+</div>
+
+<section class="ltx_section" id="S1">
+<h2 class="ltx_title ltx_title_section"><span class="ltx_tag ltx_tag_section">1 </span>Introduction</h2>
+<div class="ltx_para" id="S1.p1">
+<p class="ltx_p">Large language models scale well, but dense computation grows as <math id="S1.p1.m1" class="ltx_Math" alttext="x^{2}" display="inline"><semantics><msup><mi>x</mi><mn>2</mn></msup><annotation encoding="application/x-tex">x^{2}</annotation></semantics></math> for a model of width <math id="S1.p1.m2" class="ltx_Math" alttext="x" display="inline"><semantics><mi>x</mi><annotation encoding="application/x-tex">x</annotation></semantics></math>. We propose a sparse mixture of experts model that routes each token to two experts <cite class="ltx_cite ltx_citemacro_cite">[<a href="#bib.bib1" title="" class="ltx_ref">1</a>, <a href="#bib.bib2" title="" class="ltx_ref">2</a>]</cite>. Knowledge distillation (KD) compresses the router, and the KD loss is cheap.<span id="footnote1" class="ltx_note ltx_role_footnote"><sup class="ltx_note_mark">1</sup><span class="ltx_note_outer"><span class="ltx_note_content"><sup class="ltx_note_mark">1</sup><span class="ltx_tag ltx_tag_note">1</span>The router is trained jointly with the experts.</span></span></span> Our implementation is available at <a href="https://github.com/example/sparse-moe" title="" class="ltx_ref ltx_href">https://github.com/example/sparse-moe</a>.</p>
+</div>
+<div class="ltx_para" id="S1.p2">
+<p class="ltx_p">Our contributions are as follows:</p>
+<ul class="ltx_itemize" id="S1.I1">
+<li class="ltx_item" id="S1.I1.i1" style="list-style-type:none;"><span class="ltx_tag ltx_tag_item">•</span>
+<div class="ltx_para" id="S1.I1.i1.p1">
+<p class="ltx_p">We introduce a top-two routing rule with a load balancing loss.</p>
+</div>
+</li>
+<li class="ltx_item" id="S1.I1.i2" style="list-style-type:none;"><span class="ltx_tag ltx_tag_item">•</span>
+<div class="ltx_para" id="S1.I1.i2.p1">
+<p class="ltx_p">We show that the model matches a dense baseline on <math id="S1.I1.i2.p1.m1" class="ltx_Math" alttext="5" display="inline"><semantics><mn>5</mn><annotation encoding="application/x-tex">5</annotation></semantics></math> benchmarks while using fewer FLOPs.</p>
+</div>
+</li>
+</ul>
+</div>
+<div class="ltx_para" id="S1.p3">
+<p class="ltx_p">이 문단은 한국어로 작성된 문단입니다. 번역 기능은 이미 한국어인 문단을 건너뛰어야 합니다.</p>
+</div>
+</section>
+
+<section class="ltx_section" id="S2">
+<h2 class="ltx_title ltx_title_section"><span class="ltx_tag ltx_tag_section">2 </span>Method</h2>
+<div class="ltx_para" id="S2.p1">
+<p class="ltx_p">The router computes gate scores as in Eq. (<a href="#S2.E1" title="In 2 Method ‣ Sparse Mixtures for Everyone: A Test Paper" class="ltx_ref"><span class="ltx_text ltx_ref_tag">1</span></a>). Figure <a href="#S2.F1" title="Figure 1 ‣ 2 Method ‣ Sparse Mixtures for Everyone: A Test Paper" class="ltx_ref"><span class="ltx_text ltx_ref_tag">1</span></a> shows the architecture, Table <a href="#S2.T1" title="Table 1 ‣ 2 Method ‣ Sparse Mixtures for Everyone: A Test Paper" class="ltx_ref"><span class="ltx_text ltx_ref_tag">1</span></a> lists the results, and Section <a href="#S2.SS1" title="2.1 Training objective ‣ 2 Method ‣ Sparse Mixtures for Everyone: A Test Paper" class="ltx_ref"><span class="ltx_text ltx_ref_tag">2.1</span></a> describes the objective.</p>
+<table class="ltx_equation ltx_eqn_table" id="S2.E1">
+<tbody><tr class="ltx_equation ltx_eqn_row ltx_align_baseline">
+<td class="ltx_eqn_cell ltx_eqn_center_padleft"></td>
+<td class="ltx_eqn_cell ltx_align_center"><math id="S2.E1.m1" class="ltx_Math" alttext="g(x)=\mathrm{softmax}(W_{g}x)" display="block"><semantics><mrow><mi>g</mi><mo>(</mo><mi>x</mi><mo>)</mo><mo>=</mo><mi>softmax</mi><mo>(</mo><msub><mi>W</mi><mi>g</mi></msub><mi>x</mi><mo>)</mo></mrow><annotation encoding="application/x-tex">g(x)=\mathrm{softmax}(W_{g}x)</annotation></semantics></math></td>
+<td class="ltx_eqn_cell ltx_eqn_center_padright"></td>
+<td rowspan="1" class="ltx_eqn_cell ltx_eqn_eqno ltx_align_middle ltx_align_right"><span class="ltx_tag ltx_tag_equation ltx_align_right">(1)</span></td>
+</tr></tbody>
+</table>
+</div>
+<figure class="ltx_figure" id="S2.F1"><img src="x1.png" id="S2.F1.g1" class="ltx_graphics ltx_centering ltx_img_landscape" width="598" height="300" alt="Refer to caption">
+<figcaption class="ltx_caption ltx_centering"><span class="ltx_tag ltx_tag_figure">Figure 1: </span>Architecture of the sparse mixture layer. Each token is routed to two experts.</figcaption>
+</figure>
+<div class="ltx_para" id="S2.p2">
+<p class="ltx_p">The training loss combines the task loss and a balancing term:</p>
+<table class="ltx_equationgroup ltx_eqn_align ltx_eqn_table" id="S2.EGx1">
+<tbody id="S2.E2"><tr class="ltx_equation ltx_eqn_row ltx_align_baseline">
+<td class="ltx_eqn_cell ltx_eqn_center_padleft"></td>
+<td class="ltx_td ltx_align_right ltx_eqn_cell"><math id="S2.E2.m1" class="ltx_Math" alttext="\displaystyle\mathcal{L}" display="inline"><semantics><mi class="ltx_font_mathcaligraphic">ℒ</mi><annotation encoding="application/x-tex">\displaystyle\mathcal{L}</annotation></semantics></math></td>
+<td class="ltx_td ltx_align_left ltx_eqn_cell"><math id="S2.E2.m2" class="ltx_Math" alttext="\displaystyle=\mathcal{L}_{\text{task}}+\alpha\mathcal{L}_{\text{bal}}" display="inline"><semantics><mrow><mo>=</mo><msub><mi>ℒ</mi><mtext>task</mtext></msub><mo>+</mo><mi>α</mi><msub><mi>ℒ</mi><mtext>bal</mtext></msub></mrow><annotation encoding="application/x-tex">\displaystyle=\mathcal{L}_{\text{task}}+\alpha\mathcal{L}_{\text{bal}}</annotation></semantics></math></td>
+<td class="ltx_eqn_cell ltx_eqn_center_padright"></td>
+<td rowspan="1" class="ltx_eqn_cell ltx_eqn_eqno ltx_align_middle ltx_align_right"><span class="ltx_tag ltx_tag_equation ltx_align_right">(2)</span></td>
+</tr></tbody>
+<tbody id="S2.E3"><tr class="ltx_equation ltx_eqn_row ltx_align_baseline">
+<td class="ltx_eqn_cell ltx_eqn_center_padleft"></td>
+<td class="ltx_td ltx_align_right ltx_eqn_cell"><math id="S2.E3.m1" class="ltx_Math" alttext="\displaystyle\mathcal{L}_{\text{bal}}" display="inline"><semantics><msub><mi>ℒ</mi><mtext>bal</mtext></msub><annotation encoding="application/x-tex">\displaystyle\mathcal{L}_{\text{bal}}</annotation></semantics></math></td>
+<td class="ltx_td ltx_align_left ltx_eqn_cell"><math id="S2.E3.m2" class="ltx_Math" alttext="\displaystyle=N\sum_{i=1}^{N}f_{i}P_{i}" display="inline"><semantics><mrow><mo>=</mo><mi>N</mi><mo>∑</mo><msub><mi>f</mi><mi>i</mi></msub><msub><mi>P</mi><mi>i</mi></msub></mrow><annotation encoding="application/x-tex">\displaystyle=N\sum_{i=1}^{N}f_{i}P_{i}</annotation></semantics></math></td>
+<td class="ltx_eqn_cell ltx_eqn_center_padright"></td>
+<td rowspan="1" class="ltx_eqn_cell ltx_eqn_eqno ltx_align_middle ltx_align_right"><span class="ltx_tag ltx_tag_equation ltx_align_right">(3)</span></td>
+</tr></tbody>
+</table>
+<p class="ltx_p">where <math id="S2.p2.m1" class="ltx_Math" alttext="\alpha" display="inline"><semantics><mi>α</mi><annotation encoding="application/x-tex">\alpha</annotation></semantics></math> is a small coefficient. The layer output is the gated sum</p>
+<table class="ltx_equation ltx_eqn_table" id="S2.Ex1">
+<tbody><tr class="ltx_equation ltx_eqn_row ltx_align_baseline">
+<td class="ltx_eqn_cell ltx_eqn_center_padleft"></td>
+<td class="ltx_eqn_cell ltx_align_center"><math id="S2.Ex1.m1" class="ltx_Math" alttext="h=\sum_{i\in\mathcal{T}}g_{i}(x)E_{i}(x)" display="block"><semantics><mrow><mi>h</mi><mo>=</mo><mo>∑</mo><msub><mi>g</mi><mi>i</mi></msub><mo>(</mo><mi>x</mi><mo>)</mo><msub><mi>E</mi><mi>i</mi></msub><mo>(</mo><mi>x</mi><mo>)</mo></mrow><annotation encoding="application/x-tex">h=\sum_{i\in\mathcal{T}}g_{i}(x)E_{i}(x)</annotation></semantics></math></td>
+<td class="ltx_eqn_cell ltx_eqn_center_padright"></td>
+</tr></tbody>
+</table>
+</div>
+<figure class="ltx_figure" id="S2.F2">
+<div class="ltx_flex_figure">
+<div class="ltx_flex_cell ltx_flex_size_2">
+<figure class="ltx_figure ltx_figure_panel ltx_align_center" id="S2.F2.sf1"><img src="x2.png" id="S2.F2.sf1.g1" class="ltx_graphics ltx_img_landscape" width="300" height="200" alt="Refer to caption">
+<figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">(a) </span>Training loss</figcaption>
+</figure>
+</div>
+<div class="ltx_flex_cell ltx_flex_size_2">
+<figure class="ltx_figure ltx_figure_panel ltx_align_center" id="S2.F2.sf2"><img src="x3.svg" id="S2.F2.sf2.g1" class="ltx_graphics ltx_img_landscape" width="300" height="200" alt="Refer to caption">
+<figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">(b) </span>Expert load</figcaption>
+</figure>
+</div>
+</div>
+<figcaption class="ltx_caption ltx_centering"><span class="ltx_tag ltx_tag_figure">Figure 2: </span>Training curves: (a) loss and (b) expert load over steps.</figcaption>
+</figure>
+<figure class="ltx_figure" id="S2.F3"><svg class="ltx_picture" height="40" width="80" viewBox="0 0 80 40"><g><rect x="2" y="2" width="30" height="30"></rect><text x="40" y="20">E1</text></g></svg>
+<figcaption class="ltx_caption ltx_centering"><span class="ltx_tag ltx_tag_figure">Figure 3: </span>A TikZ diagram of the router.</figcaption>
+</figure>
+<figure class="ltx_table" id="S2.T1">
+<figcaption class="ltx_caption ltx_centering"><span class="ltx_tag ltx_tag_table">Table 1: </span>Results on two benchmarks.</figcaption>
+<table class="ltx_tabular ltx_centering ltx_guessed_headers ltx_align_middle">
+<thead class="ltx_thead"><tr class="ltx_tr"><th class="ltx_td ltx_th ltx_th_column">Model</th><th class="ltx_td ltx_th ltx_th_column">MMLU</th><th class="ltx_td ltx_th ltx_th_column">GSM8K</th></tr></thead>
+<tbody class="ltx_tbody"><tr class="ltx_tr"><td class="ltx_td">Dense</td><td class="ltx_td">61.2</td><td class="ltx_td">40.1</td></tr>
+<tr class="ltx_tr"><td class="ltx_td">Sparse (ours)</td><td class="ltx_td">63.5</td><td class="ltx_td">42.8</td></tr></tbody>
+</table>
+</figure>
+<div class="ltx_para" id="S2.p3">
+<p class="ltx_p">Table <a href="#S2.T1" class="ltx_ref"><span class="ltx_text ltx_ref_tag">1</span></a> shows that the sparse model improves accuracy by 2.3 points on MMLU, and Figure <a href="#S2.F2.sf1" class="ltx_ref"><span class="ltx_text ltx_ref_tag">2(a)</span></a> shows stable training. Routing follows <a href="#alg1" class="ltx_ref">Algorithm 1</a> and builds on efficient routers <cite class="ltx_cite">[<a href="#bib.bib4" class="ltx_ref">4</a>]</cite>. A limitation of our approach is the extra memory required to store all experts (see Appendix <a href="#A1" class="ltx_ref"><span class="ltx_text ltx_ref_tag">A</span></a>).</p>
+</div>
+<figure class="ltx_float ltx_float_algorithm ltx_framed_top" id="alg1">
+<figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_float"><span class="ltx_text ltx_font_bold">Algorithm 1</span> </span>Top-two routing</figcaption>
+<div class="ltx_listing ltx_listing">
+<div class="ltx_listingline" id="alg1.l1"><span class="ltx_tag ltx_tag_listingline">1:</span>Compute gate scores <math id="alg1.l1.m1" class="ltx_Math" alttext="g(x)" display="inline"><semantics><mrow><mi>g</mi><mo>(</mo><mi>x</mi><mo>)</mo></mrow><annotation encoding="application/x-tex">g(x)</annotation></semantics></math></div>
+<div class="ltx_listingline" id="alg1.l2"><span class="ltx_tag ltx_tag_listingline">2:</span>Select the two experts with the largest scores</div>
+<div class="ltx_listingline" id="alg1.l3"><span class="ltx_tag ltx_tag_listingline">3:</span>Return the weighted sum of expert outputs</div>
+</div>
+</figure>
+
+<section class="ltx_subsection" id="S2.SS1">
+<h3 class="ltx_title ltx_title_subsection"><span class="ltx_tag ltx_tag_subsection">2.1 </span>Training objective</h3>
+<div class="ltx_para" id="S2.SS1.p1">
+<p class="ltx_p">We minimize <math id="S2.SS1.p1.m1" class="ltx_Math" alttext="\mathcal{L}" display="inline"><semantics><mi class="ltx_font_mathcaligraphic">ℒ</mi><annotation encoding="application/x-tex">\mathcal{L}</annotation></semantics></math> with AdamW and a learning rate of <math id="S2.SS1.p1.m2" class="ltx_Math" alttext="3\times 10^{-4}" display="inline"><semantics><mrow><mn>3</mn><mo>×</mo><msup><mn>10</mn><mrow><mo>-</mo><mn>4</mn></mrow></msup></mrow><annotation encoding="application/x-tex">3\times 10^{-4}</annotation></semantics></math>. The balancing coefficient <math id="S2.SS1.p1.m3" class="ltx_Math" alttext="\alpha" display="inline"><semantics><mi>α</mi><annotation encoding="application/x-tex">\alpha</annotation></semantics></math> is set to 0.01, following prior work <cite class="ltx_cite">[<a href="#bib.bib3" class="ltx_ref">3</a>]</cite>. By Theorem <a href="#Thmtheorem1" class="ltx_ref"><span class="ltx_text ltx_ref_tag">1</span></a>, uniform routing is optimal.</p>
+</div>
+<div class="ltx_theorem ltx_theorem_theorem" id="Thmtheorem1">
+<h6 class="ltx_title ltx_runin ltx_title_theorem"><span class="ltx_tag ltx_tag_theorem"><span class="ltx_text ltx_font_bold">Theorem 1</span></span><span class="ltx_text ltx_font_bold">.</span></h6>
+<div class="ltx_para" id="Thmtheorem1.p1">
+<p class="ltx_p"><span class="ltx_text ltx_font_italic">If every expert receives at least one token, the balancing loss is minimized when </span><math id="Thmtheorem1.p1.m1" class="ltx_Math" alttext="f_{i}=1/N" display="inline"><semantics><mrow><msub><mi>f</mi><mi>i</mi></msub><mo>=</mo><mn>1</mn><mo>/</mo><mi>N</mi></mrow><annotation encoding="application/x-tex">f_{i}=1/N</annotation></semantics></math>.</p>
+</div>
+</div>
+<div class="ltx_proof" id="S2.SS1.3">
+<h6 class="ltx_title ltx_runin ltx_font_italic ltx_title_proof">Proof.</h6>
+<div class="ltx_para" id="S2.SS1.3.p1">
+<p class="ltx_p">By the Cauchy-Schwarz inequality the sum is minimized at the uniform distribution. ∎</p>
+</div>
+</div>
+</section>
+</section>
+
+<section class="ltx_appendix" id="A1">
+<h2 class="ltx_title ltx_title_appendix"><span class="ltx_tag ltx_tag_appendix">Appendix A </span>Additional results</h2>
+<div class="ltx_para" id="A1.p1">
+<p class="ltx_p">We report the per-expert load in Eq. (<a href="#A1.E4" class="ltx_ref"><span class="ltx_text ltx_ref_tag">4</span></a>).</p>
+<table class="ltx_equation ltx_eqn_table" id="A1.E4">
+<tbody><tr class="ltx_equation ltx_eqn_row ltx_align_baseline">
+<td class="ltx_eqn_cell ltx_eqn_center_padleft"></td>
+<td class="ltx_eqn_cell ltx_align_center"><math id="A1.E4.m1" class="ltx_Math" alttext="f_{i}=\frac{1}{T}\sum_{t}\mathbb{1}[i\in\mathcal{T}_{t}]" display="block"><semantics><mrow><msub><mi>f</mi><mi>i</mi></msub><mo>=</mo><mfrac><mn>1</mn><mi>T</mi></mfrac><mo>∑</mo></mrow><annotation encoding="application/x-tex">f_{i}=\frac{1}{T}\sum_{t}\mathbb{1}[i\in\mathcal{T}_{t}]</annotation></semantics></math></td>
+<td class="ltx_eqn_cell ltx_eqn_center_padright"></td>
+<td rowspan="1" class="ltx_eqn_cell ltx_eqn_eqno ltx_align_middle ltx_align_right"><span class="ltx_tag ltx_tag_equation ltx_align_right">(4)</span></td>
+</tr></tbody>
+</table>
+</div>
+</section>
+
+<section class="ltx_bibliography" id="bib">
+<h2 class="ltx_title ltx_title_bibliography">References</h2>
+<ul class="ltx_biblist">
+<li class="ltx_bibitem" id="bib.bib1"><span class="ltx_tag ltx_role_refnum ltx_tag_bibitem">[1]</span>
+<span class="ltx_bibblock">A. Author and B. Author.</span>
+<span class="ltx_bibblock">Sparse mixtures of experts for everyone.</span>
+<span class="ltx_bibblock"><span class="ltx_text ltx_font_italic">arXiv preprint arXiv:2301.00001</span>, 2023.</span>
+</li>
+<li class="ltx_bibitem" id="bib.bib2"><span class="ltx_tag ltx_role_refnum ltx_tag_bibitem">[2]</span>
+<span class="ltx_bibblock">C. Writer and D. Reader.</span>
+<span class="ltx_bibblock">Attention mechanisms revisited.</span>
+<span class="ltx_bibblock">In <span class="ltx_text ltx_font_italic">Proceedings of ACL</span>, pages 1–10, 2022.</span>
+</li>
+<li class="ltx_bibitem" id="bib.bib3"><span class="ltx_tag ltx_role_refnum ltx_tag_bibitem">[3]</span>
+<span class="ltx_bibblock">E. Scholar.</span>
+<span class="ltx_bibblock">Load balancing for learned routers.</span>
+<span class="ltx_bibblock"><span class="ltx_text ltx_font_italic">Journal of Machine Learning</span>, 2021. <a href="https://doi.org/10.1000/jml.2021.123" title="" class="ltx_ref ltx_href">https://doi.org/10.1000/jml.2021.123</a>.</span>
+</li>
+<li class="ltx_bibitem" id="bib.bib4"><span class="ltx_tag ltx_role_refnum ltx_tag_bibitem">[4]</span>
+<span class="ltx_bibblock">F. Hacker.</span>
+<span class="ltx_bibblock">Efficient expert routing.</span>
+<span class="ltx_bibblock"><a href="https://arxiv.org/abs/2302.00002" title="" class="ltx_ref ltx_href">https://arxiv.org/abs/2302.00002</a>, 2023.</span>
+</li>
+</ul>
+</section>
+</article>
+</div>
+<footer class="ltx_page_footer"><div class="ltx_page_logo">Generated by LaTeXML</div></footer>
+</div>
+</body>
+</html>

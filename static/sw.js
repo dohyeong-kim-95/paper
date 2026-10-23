@@ -1,11 +1,138 @@
-// 최소 서비스워커: 정적 파일만 캐시, 나머지는 네트워크 우선
-const CACHE = "paper-v1";
-const ASSETS = ["/static/style.css", "/static/app.js", "/static/icon-192.png"];
+// 서비스워커: 앱 셸·논문 페이지·기능 번들 캐시 + 오프라인 읽기
+// - GET /api/* 는 네트워크 우선. 응답에 'X-Offline-Cacheable: 1' 헤더가 있으면 저장해 두고 오프라인 때 사용
+//   (기능은 sw.js를 고치지 말고 서버 응답에 헤더를 붙여 참여: core.offline_json / core.cached_stream)
+// - 기능별 확장은 static/features/<id>.sw.js → /features.sw.js 로 묶여 여기서 importScripts
+const V = "paper-v2";
+const SHELL = `${V}-shell`, PAGES = `${V}-pages`, API = `${V}-api`, CDN = `${V}-cdn`, IMG = `${V}-img`;
+const KEEP = [SHELL, PAGES, API, CDN, IMG];
+const SHELL_URLS = ["/", "/static/style.css", "/static/store.js", "/static/ui.js", "/static/anchor.js", "/static/app.js",
+  "/static/render.js", "/static/voice.js", "/static/icon-192.png", "/static/manifest.json", "/features.js", "/features.css"];
+const IMG_MAX = 60; // 다른 출처 이미지는 불투명 응답이라 용량을 크게 차지 → 개수 제한
+const PAGE_TIMEOUT = 3000;
 
-self.addEventListener("install", e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS))));
+// 기능 확장용: routes에 {test(url, request), handle(event)} 를 넣으면 기본 처리보다 먼저 검사
+self.PR_SW = { V, SHELL, PAGES, API, CDN, IMG, IMG_MAX, routes: [], onMessage: [] };
+try { importScripts("/features.sw.js"); } catch (e) { /* 확장이 없거나 오프라인 */ }
+
+self.addEventListener("install", e => {
+  e.waitUntil(caches.open(SHELL).then(c => c.addAll(SHELL_URLS)).catch(() => {}).then(() => self.skipWaiting()));
+});
+
+self.addEventListener("activate", e => {
+  e.waitUntil(caches.keys()
+    .then(keys => Promise.all(keys.filter(k => !KEEP.includes(k)).map(k => caches.delete(k))))
+    .then(() => self.clients.claim()));
+});
+
+const timeout = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function offlinePage() {
+  const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>오프라인</title><body style="font:17px/1.6 -apple-system,sans-serif;padding:24px">
+<h1>오프라인입니다</h1><p>이 페이지는 아직 저장되지 않았습니다. 한 번 열어 본 논문은 오프라인에서도 열립니다.</p><p><a href="/">홈으로</a></p>`;
+  return new Response(html, { status: 503, headers: { "Content-Type": "text/html; charset=utf-8" } });
+}
+
+// 페이지: 네트워크 우선, 3초 넘게 걸리고 저장본이 있으면 저장본
+async function page(req) {
+  const cache = await caches.open(PAGES);
+  const net = fetch(req).then(res => {
+    if (res.ok) cache.put(req, res.clone());
+    return res;
+  });
+  const hit = await cache.match(req);
+  if (!hit) return net.catch(() => offlinePage());
+  return Promise.race([net.then(r => (r.ok ? r : hit), () => hit), timeout(PAGE_TIMEOUT).then(() => hit)]);
+}
+
+// 같은 경로의 옛 버전(?v=)은 지우고 저장
+async function putLatest(cache, req, res) {
+  const path = new URL(req.url).pathname;
+  for (const k of await cache.keys()) if (new URL(k.url).pathname === path && k.url !== req.url) cache.delete(k);
+  return cache.put(req, res);
+}
+
+// /static, /features.*: 버전(?v=)이 붙은 주소는 바뀌지 않으므로 캐시 우선, 아니면 네트워크 우선
+async function asset(req, url) {
+  const cache = await caches.open(SHELL);
+  if (url.searchParams.has("v")) {
+    const hit = await cache.match(req);
+    if (hit) return hit;
+  }
+  try {
+    const res = await fetch(req);
+    if (res.ok) putLatest(cache, req, res.clone());
+    return res;
+  } catch (e) {
+    return (await cache.match(req, { ignoreSearch: true })) || Response.error();
+  }
+}
+
+// GET /api/*: 네트워크 우선, 기능이 허락한 응답(X-Offline-Cacheable: 1)만 저장
+async function api(req) {
+  const cache = await caches.open(API);
+  try {
+    const res = await fetch(req);
+    if (res.ok && res.headers.get("X-Offline-Cacheable") === "1") cache.put(req, res.clone());
+    return res;
+  } catch (e) {
+    return (await cache.match(req)) || new Response(JSON.stringify({ detail: "오프라인입니다" }),
+      { status: 503, headers: { "Content-Type": "application/json" } });
+  }
+}
+
+async function cacheFirst(req, name) {
+  const cache = await caches.open(name);
+  const hit = await cache.match(req);
+  if (hit) return hit;
+  const res = await fetch(req);
+  if (res.ok || res.type === "opaque") cache.put(req, res.clone());
+  return res;
+}
+
+async function trim(name, max) {
+  const cache = await caches.open(name);
+  const keys = await cache.keys();
+  for (const k of keys.slice(0, Math.max(0, keys.length - max))) await cache.delete(k);
+}
+
+async function image(req) {
+  try { return await cacheFirst(req, IMG); }
+  finally { trim(IMG, IMG_MAX); }
+}
 
 self.addEventListener("fetch", e => {
-  const url = new URL(e.request.url);
-  if (e.request.method !== "GET" || url.pathname.startsWith("/api/")) return;
-  e.respondWith(fetch(e.request).catch(() => caches.match(e.request)));
+  const req = e.request;
+  if (req.method !== "GET") return;
+  const url = new URL(req.url);
+  for (const r of self.PR_SW.routes) {
+    try { if (r.test(url, req)) return e.respondWith(r.handle(e)); } catch (err) { /* 확장 오류는 무시 */ }
+  }
+  if (url.origin === location.origin) {
+    if (req.mode === "navigate") return e.respondWith(page(req));
+    if (url.pathname.startsWith("/api/")) return e.respondWith(api(req));
+    if (url.pathname.startsWith("/static/") || url.pathname.startsWith("/features.")) return e.respondWith(asset(req, url));
+    return;
+  }
+  if (url.hostname === "cdn.jsdelivr.net") return e.respondWith(cacheFirst(req, CDN));
+  if (req.destination === "image" && /(^|\.)arxiv\.org$/.test(url.hostname)) return e.respondWith(image(req));
+});
+
+// 페이지에서 그림 미리 저장: navigator.serviceWorker.controller.postMessage({type: 'precache', urls})
+self.addEventListener("message", e => {
+  const msg = e.data || {};
+  for (const fn of self.PR_SW.onMessage) { try { fn(e); } catch (err) { /* 무시 */ } }
+  if (msg.type !== "precache" || !Array.isArray(msg.urls)) return;
+  e.waitUntil((async () => {
+    const cache = await caches.open(IMG);
+    let n = 0;
+    for (const u of msg.urls.slice(0, IMG_MAX)) {
+      try {
+        if (!(await cache.match(u))) await cache.put(u, await fetch(u, { mode: "no-cors" }));
+        n++;
+      } catch (err) { /* 실패한 그림은 건너뜀 */ }
+    }
+    await trim(IMG, IMG_MAX);
+    if (e.source) e.source.postMessage({ type: "precached", n });
+  })());
 });

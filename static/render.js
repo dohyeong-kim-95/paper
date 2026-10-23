@@ -1,9 +1,11 @@
 // 답변 렌더링: Markdown -> DOMPurify -> KaTeX. 스트리밍 청크마다 호출해도 되도록 rAF로 묶음.
+// renderAnswer(el, text): 다음 프레임에 그림 (스트리밍용)
+// renderAnswerNow(el, text): 지금 바로 그리고 대기 중인 그리기를 취소 (답변 완료 시 — 그 뒤에 붙인 DOM이 덮어써지지 않게)
 (() => {
   // 코드(``` 블록, `인라인`)는 그대로 두고, 그 밖의 $$...$$ / $...$ 만 보호.
   // 인라인 $는 pandoc 규칙: 여는 $ 뒤·닫는 $ 앞에 공백 없음, 닫는 $ 뒤에 숫자 없음 ("$5 and $10" 방지)
   const TOKEN_RE = /(```[\s\S]*?(?:```|$)|`[^`\n]*`)|(\$\$[\s\S]+?\$\$|(?<!\\)\$(?=\S)[^$\n]*?[^\s\\$]\$(?!\d))/g;
-  const PH_RE = /\uE000(\d+)\uE001/g; // 사용자 영역 문자라 marked가 건드리지 않음
+  const PH_RE = /(\d+)/g; // 사용자 영역 문자라 marked가 건드리지 않음
   const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
   const KATEX_OPTS = {
     delimiters: [
@@ -20,7 +22,7 @@
     const out = text.replace(TOKEN_RE, (m, code) => {
       if (code) return m;
       math.push(m);
-      return `\uE000${math.length - 1}\uE001`;
+      return `${math.length - 1}`;
     });
     return { out, math };
   }
@@ -53,6 +55,9 @@
     renderMath(el);
   }
 
+  if (typeof module !== "undefined") module.exports = { protect, restore };
+  if (typeof window === "undefined") return;
+
   const queue = new Map(); // el -> 최신 text (한 프레임에 요소별로 한 번만 렌더)
   function flush() {
     for (const [el, text] of queue) render(el, text);
@@ -62,5 +67,9 @@
   window.renderAnswer = (el, text) => {
     if (!queue.size) requestAnimationFrame(flush);
     queue.set(el, text);
+  };
+  window.renderAnswerNow = (el, text) => {
+    queue.delete(el);
+    render(el, text);
   };
 })();

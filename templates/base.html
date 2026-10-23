@@ -2,16 +2,43 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="theme-color" content="#1a1a1a">
   <link rel="manifest" href="/static/manifest.json">
   <link rel="icon" href="/static/icon-192.png">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/style.css">
+  <script>
+    // 첫 페인트 전에 읽기 설정 적용 (깜빡임 방지). 값의 주인은 reading-settings 기능 (pr:reading-settings)
+    (function () {
+      try {
+        var rs = JSON.parse(localStorage.getItem("pr:reading-settings") || "null");
+        if (!rs) return;
+        var d = document.documentElement;
+        if (rs.theme && rs.theme !== "system") d.setAttribute("data-theme", rs.theme);
+        if (rs.size) d.style.setProperty("--fs", rs.size + "px");
+        if (rs.lh) d.style.setProperty("--lh", rs.lh);
+        if (rs.margin != null) d.style.setProperty("--margin", rs.margin + "px");
+        if (rs.font) d.setAttribute("data-font", rs.font);
+        if (rs.justify) d.setAttribute("data-justify", "1");
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="{{ asset('style.css') }}">
+  {% set fa = feature_assets() %}
+  <link rel="stylesheet" href="{{ fa.css }}">
+  {% block head %}{% endblock %}
   <title>{% block title %}Paper Reader{% endblock %}</title>
 </head>
-<body>
+<body data-page="{% block page %}home{% endblock %}"{% block body_attrs %}{% endblock %}>
 {% block body %}{% endblock %}
+<script src="{{ asset('store.js') }}"></script>
+<script src="{{ asset('ui.js') }}"></script>
+<script src="{{ asset('anchor.js') }}"></script>
+<script src="{{ asset('app.js') }}"></script>
+{% block scripts %}{% endblock %}
+<script defer src="{{ asset('render.js') }}"></script>
+<script defer src="{{ fa.js }}" data-features="{{ fa.names | join(' ') }}"></script>
+{% block late_scripts %}{% endblock %}
 <script>
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
 </script>

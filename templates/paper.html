@@ -1,34 +1,56 @@
 {% extends "base.html" %}
 {% block title %}{{ paper.title }}{% endblock %}
+{% block page %}paper{% endblock %}
+{% block body_attrs %} data-arxiv-id="{{ arxiv_id }}"{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
+{% endblock %}
 {% block body %}
-<header class="bar"><a href="/">←</a><span>{{ arxiv_id }}</span></header>
-<main id="paper" class="paper">{{ paper.html | safe }}</main>
-
-<button id="ask-btn" class="ask-btn" hidden>질문하기</button>
-
-<section id="sheet" class="sheet" hidden>
-  <div class="sheet-head"><b>질문</b><button id="close">✕</button></div>
-  <blockquote id="quote"></blockquote>
-  <div class="presets">
-    <button data-q="이 부분을 쉽게 설명해줘">쉽게 설명</button>
-    <button data-q="이 수식의 각 기호와 의미를 풀어줘">수식 풀이</button>
-    <button data-q="한국어로 번역해줘">번역</button>
-    <button data-q="논문 전체 맥락에서 이 부분이 왜 중요한지 알려줘">왜 중요?</button>
-  </div>
-  <form id="ask-form"><input id="q" placeholder="직접 질문하기"><button type="button" id="mic" aria-label="음성으로 질문">🎤</button><button>↑</button></form>
-  <div id="answer" class="answer"></div>
-</section>
-
 <script>
   const ARXIV_ID = {{ arxiv_id | tojson }};
-  fetch(`/api/prewarm/${ARXIV_ID}`, { method: "POST" });
+  // 논문 캐시 미리 데우기 (PaperApp.warm / idle 작업이 이 약속을 기다림)
+  window.PREWARM = fetch(`/api/prewarm/${ARXIV_ID}`, { method: "POST" });
 </script>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-<script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-<script defer src="/static/render.js"></script>
-<script src="/static/app.js"></script>
-<script src="/static/voice.js"></script>
+<header class="bar" id="bar">
+  <a href="/" aria-label="홈으로">←</a>
+  <span class="bar-title" id="bar-title">{{ arxiv_id }}</span>
+  <span id="bar-actions"></span>
+  <button type="button" id="bar-more" class="pr-bar-btn" aria-label="더보기" hidden>⋯</button>
+</header>
+<div id="status-strip" class="pr-ui" role="status" hidden></div>
+<main id="paper" class="paper" lang="en">{{ paper.html | safe }}</main>
+
+<div id="fab-stack" class="pr-ui"></div>
+<button type="button" id="back-chip" class="pr-ui" hidden>↩ 돌아가기</button>
+<div id="sel-bar" class="pr-ui" role="toolbar" aria-label="선택한 부분 도구" hidden></div>
+<div id="sheet-pill" class="pr-ui" hidden>
+  <button type="button" id="pill-open">답변 보기</button>
+  <button type="button" id="pill-x" aria-label="대화 닫기">✕</button>
+</div>
+
+<section id="sheet" class="sheet pr-ui" role="dialog" aria-modal="false" aria-labelledby="sheet-title" tabindex="-1" hidden>
+  <div class="sheet-grab" aria-hidden="true"><div class="pr-handle"></div></div>
+  <div class="sheet-head">
+    <b id="sheet-title">질문</b>
+    <span>
+      <button type="button" id="sheet-min" aria-label="내려두기">⌄</button>
+      <button type="button" id="close" aria-label="닫기">✕</button>
+    </span>
+  </div>
+  <blockquote id="quote"></blockquote>
+  <div id="sheet-tools" hidden></div>
+  <div class="presets" id="presets"></div>
+  <form id="ask-form"><input id="q" placeholder="직접 질문하기" aria-label="직접 질문하기" autocomplete="off"><button type="button" id="mic" aria-label="음성으로 질문">🎤</button><button aria-label="질문 보내기">↑</button></form>
+  <div id="answer" class="answer"></div>
+  <div id="sr-live" class="sr-only" aria-live="polite"></div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="{{ asset('voice.js') }}"></script>
+{% endblock %}
+{% block late_scripts %}
+<script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
 {% endblock %}

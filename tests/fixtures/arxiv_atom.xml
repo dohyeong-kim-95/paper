@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <link href="http://arxiv.org/api/query?search_query%3D%26id_list%3D2301.00001%26start%3D0%26max_results%3D10" rel="self" type="application/atom+xml"/>
+  <title type="html">ArXiv Query: search_query=&amp;id_list=2301.00001&amp;start=0&amp;max_results=10</title>
+  <id>http://arxiv.org/api/fixture</id>
+  <updated>2026-10-23T00:00:00-04:00</updated>
+  <opensearch:totalResults xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">4</opensearch:totalResults>
+  <opensearch:startIndex xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">0</opensearch:startIndex>
+  <opensearch:itemsPerPage xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">10</opensearch:itemsPerPage>
+  <entry>
+    <id>http://arxiv.org/abs/2301.00001v2</id>
+    <updated>2023-02-01T12:00:00Z</updated>
+    <published>2023-01-01T12:00:00Z</published>
+    <title>Sparse Mixtures of Experts
+  for Everyone</title>
+    <summary>  We study sparse mixtures of experts and show that routing each token to
+two experts matches dense models at a fraction of the compute.
+</summary>
+    <author>
+      <name>A. Author</name>
+    </author>
+    <author>
+      <name>B. Author</name>
+    </author>
+    <arxiv:doi xmlns:arxiv="http://arxiv.org/schemas/atom">10.1000/sparse.2023</arxiv:doi>
+    <link title="doi" href="http://dx.doi.org/10.1000/sparse.2023" rel="related"/>
+    <arxiv:comment xmlns:arxiv="http://arxiv.org/schemas/atom">12 pages, 4 figures</arxiv:comment>
+    <link href="http://arxiv.org/abs/2301.00001v2" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2301.00001v2" rel="related" type="application/pdf"/>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2302.00002v1</id>
+    <updated>2023-02-15T12:00:00Z</updated>
+    <published>2023-02-15T12:00:00Z</published>
+    <title>Efficient Expert Routing</title>
+    <summary>We propose an efficient routing algorithm for mixture of experts layers.</summary>
+    <author>
+      <name>F. Hacker</name>
+    </author>
+    <link href="http://arxiv.org/abs/2302.00002v1" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2302.00002v1" rel="related" type="application/pdf"/>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2401.00001v1</id>
+    <updated>2024-01-02T12:00:00Z</updated>
+    <published>2024-01-02T12:00:00Z</published>
+    <title>Sparse Mixtures for Everyone: A Test Paper</title>
+    <summary>We propose a sparse mixture of experts model that routes each token to two experts.</summary>
+    <author>
+      <name>Alice Kim</name>
+    </author>
+    <author>
+      <name>Bob Lee</name>
+    </author>
+    <link href="http://arxiv.org/abs/2401.00001v1" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2401.00001v1" rel="related" type="application/pdf"/>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/api/errors#incorrect_id_format_for_1234</id>
+    <title>Error</title>
+    <summary>incorrect id format for 1234</summary>
+    <updated>2026-10-23T00:00:00-04:00</updated>
+    <link href="http://arxiv.org/api/errors#incorrect_id_format_for_1234" rel="alternate" type="text/html"/>
+    <author>
+      <name>arXiv api core</name>
+    </author>
+  </entry>
+</feed>

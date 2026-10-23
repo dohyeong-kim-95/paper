@@ -3,8 +3,9 @@
 <main class="home">
   <h1>Paper Reader</h1>
   <form action="/open" method="get">
-    <input name="q" placeholder="arXiv ID 또는 URL (예: 2401.04088)" autofocus required>
+    <input name="q" placeholder="arXiv ID 또는 URL (예: 2401.04088)" aria-label="arXiv ID 또는 URL" autofocus required>
     <button>열기</button>
   </form>
+  <div id="home-sections"></div>
 </main>
 {% endblock %}
