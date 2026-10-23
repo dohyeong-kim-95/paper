@@ -1,0 +1,48 @@
+/* cite-cards: 인용 카드 peek · .bib 바구니 · GitHub 미리보기 (접두어 cc-) */
+.cc-card { display: flex; flex-direction: column; gap: 10px; padding-bottom: 4px; }
+.cc-info { display: flex; flex-direction: column; gap: 4px; }
+.cc-title { font-size: 16px; font-weight: 600; line-height: 1.35; }
+.cc-sub { color: var(--muted); font-size: 13px; line-height: 1.4; }
+.cc-tldr { display: flex; gap: 6px; align-items: baseline; margin-top: 4px; padding: 6px 10px; border-left: 3px solid var(--accent);
+  border-radius: 6px; background: var(--bg); font-size: 14px; line-height: 1.45; }
+.cc-tldr b { flex: none; color: var(--accent); font-size: 11px; letter-spacing: .02em; }
+.cc-abs { margin: 4px 0 0; font-size: 14px; line-height: 1.55; }
+.cc-more { border: 0; background: none; color: var(--accent); padding: 2px 0; font-size: 13px; }
+.cc-status { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--muted); font-size: 13px; }
+.cc-status button { border: 0; background: none; color: var(--accent); padding: 0; font-size: 13px; }
+.cc-warn { color: #b45309; font-size: 13px; }
+
+/* 불러오는 중 자리 (움직임 줄이기 설정이면 멈춤) */
+.cc-loading { gap: 6px; }
+.cc-skel { display: block; height: 14px; width: 85%; border-radius: 4px; background: var(--line); animation: cc-pulse 1.2s ease-in-out infinite; }
+.cc-skel-short { width: 55%; }
+@keyframes cc-pulse { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .cc-skel { animation: none; } }
+
+/* 참고문헌 원문 (즉시 표시) */
+.cc-bib { padding: 8px 10px; border-radius: 8px; background: var(--bg); color: var(--muted); font-size: 13px; line-height: 1.45; }
+.cc-bib li, .cc-bib .ltx_bibitem { display: block; list-style: none; margin: 0; padding: 0; }
+.cc-bib .ltx_bibblock { display: inline; }
+.cc-bib .ltx_tag { margin-right: 4px; font-weight: 600; }
+.cc-bib a { overflow-wrap: anywhere; }
+
+/* 버튼 줄 */
+.cc-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.cc-row > button, .cc-row > a { display: inline-flex; align-items: center; min-height: 36px; box-sizing: border-box; padding: 6px 12px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--fg); font-size: 14px; text-decoration: none; }
+.cc-row > .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.cc-row > .cc-open { border-color: var(--accent); color: var(--accent); }
+.cc-row > button:disabled { opacity: .6; }
+.cc-chips > button, .cc-chips > a { min-height: 32px; padding: 4px 11px; font-size: 13px; }
+.cc-chips > button.on { border-color: var(--accent); color: var(--accent); }
+.cc-basket-link { align-self: flex-start; border: 0; background: none; color: var(--accent); padding: 2px 0; font-size: 13px; }
+
+/* .bib 바구니 */
+.cc-basket { display: flex; flex-direction: column; gap: 6px; }
+.cc-bitem { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-radius: 8px; background: var(--bg); }
+.cc-bmain { flex: 1; min-width: 0; }
+.cc-bmain code { font: 12px ui-monospace, Menlo, monospace; color: var(--accent); }
+.cc-bitem button { flex: none; border: 0; background: none; color: var(--muted); font-size: 16px; padding: 4px 6px; }
+
+/* GitHub 미리보기 */
+.cc-topics > span { padding: 2px 8px; border-radius: 999px; background: var(--bg); color: var(--accent); font-size: 12px; }

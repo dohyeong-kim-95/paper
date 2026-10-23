@@ -1,0 +1,263 @@
+"""cite-cards: 인용 카드 보강 (arXiv 일괄·제목 검색, Semantic Scholar, Crossref) + GitHub 미리보기. Claude 호출 없음"""
+import asyncio
+import json
+
+import httpx
+
+from features import cite_cards as cc
+from tests.helpers import AsyncCoreTestCase, CoreTestCase, core, fixture
+
+S2_BIB1 = {
+    "paperId": "abc", "title": "Sparse Mixtures of Experts for Everyone", "venue": "ICML", "year": 2023,
+    "citationCount": 42, "tldr": {"model": "tldr@v2", "text": "Two experts per token match dense models."},
+    "externalIds": {"ArXiv": "2301.00001", "DOI": "10.1000/sparse.2023"},
+    "authors": [{"name": "A. Author"}, {"name": "B. Author"}], "abstract": None,
+}
+CROSSREF_BIB3 = {"status": "ok", "message": {
+    "DOI": "10.1000/jml.2021.123", "title": ["Load Balancing for Learned Routers"],
+    "author": [{"given": "E.", "family": "Scholar"}], "container-title": ["Journal of Machine Learning"],
+    "issued": {"date-parts": [[2021, 5]]}, "is-referenced-by-count": 7,
+    "abstract": "<jats:p>We balance <jats:italic>load</jats:italic> across routers.</jats:p>",
+}}
+
+
+def atom(title: str, aid: str = "2205.01234") -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+<id>http://arxiv.org/abs/{aid}v1</id><published>2022-05-01T00:00:00Z</published><updated>2022-05-01T00:00:00Z</updated>
+<title>{title}</title><summary>An abstract about {title}.</summary><author><name>C. Writer</name></author>
+</entry></feed>"""
+
+
+def js(obj):
+    return json.dumps(obj)
+
+
+class Base(CoreTestCase):
+    def setUp(self):
+        super().setUp()
+        cc._down.clear()
+        self.addCleanup(cc._down.clear)
+
+    def get(self, bib_id):
+        return self.client.get(f"/api/cite-cards/{self.paper_id}/{bib_id}")
+
+    def stored(self):
+        return core.read_json(core.task_path(self.paper_id, "cite-cards"), None)
+
+    def tearDown(self):
+        super().tearDown()
+        self.assertEqual(self.claude.calls, [], "cite-cards는 Claude를 부르지 않음")
+
+
+class CiteCardTests(Base):
+    def test_arxiv_entry_enriched_with_one_batch_and_s2(self):
+        self.http.arxiv().route("semanticscholar.org/graph/v1/paper/arXiv:2301.00001", js(S2_BIB1))
+        r = self.get("bib.bib1")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers.get("x-offline-cacheable"), "1")
+        d = r.json()
+        self.assertEqual(d["label"], "[1]")
+        self.assertIn("Sparse mixtures of experts for everyone", d["bib_text"])
+        e = d["enriched"]
+        self.assertEqual(e["arxiv_id"], "2301.00001")
+        self.assertEqual(e["title"], "Sparse Mixtures of Experts for Everyone")  # arXiv 우선
+        self.assertTrue(e["summary"].startswith("We study sparse mixtures"))
+        self.assertEqual((e["venue"], e["citations"], e["year"]), ("ICML", 42, 2023))
+        self.assertEqual(e["tldr"], "Two experts per token match dense models.")
+        self.assertEqual(e["sources"], ["arxiv", "s2"])
+        self.assertFalse(d["partial"])
+        # 참고문헌의 arXiv id 전부(bib1, bib4)를 한 번의 id_list로
+        arxiv_calls = [u for u in self.http.calls if "export.arxiv.org" in u]
+        self.assertEqual(len(arxiv_calls), 1)
+        self.assertIn("id_list=2301.00001%2C2302.00002", arxiv_calls[0])
+        cache = self.stored()
+        self.assertEqual(cache["bib.bib4"]["arxiv"]["title"], "Efficient Expert Routing")
+        self.assertIn("_batch", cache)
+
+    def test_second_request_served_from_cache_with_zero_http_calls(self):
+        self.http.arxiv().route("arXiv:2301.00001", js(S2_BIB1))
+        first = self.get("bib.bib1").json()
+        n = len(self.http.calls)
+        second = self.get("bib.bib1").json()
+        self.assertEqual(len(self.http.calls), n)
+        self.assertEqual(first, second)
+
+    def test_other_arxiv_entry_reuses_batch(self):
+        self.http.arxiv().route("semanticscholar.org", None, status=404)
+        self.get("bib.bib1")
+        before = len([u for u in self.http.calls if "export.arxiv.org" in u])
+        d = self.get("bib.bib4").json()
+        after = len([u for u in self.http.calls if "export.arxiv.org" in u])
+        self.assertEqual(before, after, "bib4는 첫 탭의 일괄 조회로 이미 캐시됨")
+        self.assertEqual(d["enriched"]["arxiv_id"], "2302.00002")
+        self.assertEqual(d["enriched"]["sources"], ["arxiv"])  # S2 404 = 없음 (캐시)
+        self.assertFalse(d["partial"])
+
+    def test_title_search_dissimilar_title_gives_null(self):
+        self.http.arxiv(atom("Completely Different Topic Here")).route("search/match", None, status=404)
+        d = self.get("bib.bib2").json()
+        self.assertIsNone(d["enriched"])
+        self.assertFalse(d["partial"])
+        q = next(u for u in self.http.calls if "export.arxiv.org" in u)
+        self.assertIn("search_query=ti%3A%22attention+mechanisms+revisited%22", q)
+        self.assertIn("max_results=3", q)
+        # 없음도 캐시 → 다시 묻지 않음
+        n = len(self.http.calls)
+        self.assertIsNone(self.get("bib.bib2").json()["enriched"])
+        self.assertEqual(len(self.http.calls), n)
+
+    def test_title_search_similar_title_enriches(self):
+        self.http.arxiv(atom("Attention Mechanisms: Revisited")).route("search/match", None, status=404)
+        e = self.get("bib.bib2").json()["enriched"]
+        self.assertEqual(e["arxiv_id"], "2205.01234")
+        self.assertEqual(e["authors"], ["C. Writer"])
+
+    def test_s2_title_match_needs_similar_title(self):
+        self.http.arxiv(atom("Nothing Alike")).route("search/match", js({"data": [{**S2_BIB1, "title": "Attention Mechanisms Revisited", "externalIds": {}}]}))
+        e = self.get("bib.bib2").json()["enriched"]
+        self.assertEqual(e["sources"], ["s2"])
+        self.assertEqual(e["venue"], "ICML")
+        self.cache_dir_reset()
+        self.http.routes.clear()
+        self.http.arxiv(atom("Nothing Alike")).route("search/match", js({"data": [{**S2_BIB1, "title": "Unrelated"}]}))
+        self.assertIsNone(self.get("bib.bib2").json()["enriched"])
+
+    def cache_dir_reset(self):
+        core.task_path(self.paper_id, "cite-cards").unlink()
+
+    def test_doi_entry_uses_s2_and_crossref_not_arxiv(self):
+        self.http.route("DOI:10.1000/jml.2021.123", js({**S2_BIB1, "title": "Load balancing", "venue": "", "tldr": None,
+                                                        "citationCount": 9, "externalIds": {"DOI": "10.1000/jml.2021.123"}}))
+        self.http.route("api.crossref.org/works/10.1000/jml.2021.123", js(CROSSREF_BIB3))
+        d = self.get("bib.bib3").json()
+        e = d["enriched"]
+        self.assertFalse(any("export.arxiv.org" in u for u in self.http.calls))
+        self.assertEqual(e["title"], "Load Balancing for Learned Routers")  # Crossref가 S2보다 우선
+        self.assertEqual(e["venue"], "Journal of Machine Learning")  # S2 venue가 비어 Crossref
+        self.assertEqual(e["citations"], 9)  # 인용 수는 S2 먼저
+        self.assertEqual(e["summary"], "We balance load across routers.")
+        self.assertEqual(e["year"], 2021)
+        self.assertEqual(e["authors"], ["E. Scholar"])
+        self.assertEqual(sorted(e["sources"]), ["crossref", "s2"])
+
+    def test_unknown_bib_and_paper_404(self):
+        self.assertEqual(self.get("bib.bib99").status_code, 404)
+        self.assertEqual(self.client.get("/api/cite-cards/2401.99999/bib.bib1").status_code, 404)
+        self.assertFalse(any("arxiv.org/api" in u or "semanticscholar" in u for u in self.http.calls))
+
+    def test_network_failure_returns_bib_text_and_caches_nothing(self):
+        r = self.get("bib.bib1")  # 모든 외부 요청이 ConnectError
+        self.assertEqual(r.status_code, 200)
+        d = r.json()
+        self.assertIsNone(d["enriched"])
+        self.assertTrue(d["partial"])
+        self.assertIn("arXiv:2301.00001", d["bib_text"])
+        self.assertIsNone(r.headers.get("x-offline-cacheable"))
+        self.assertIsNone(self.stored())
+        # arXiv는 다음 탭에서 다시 시도 (온라인 복귀), S2는 잠시 쉼
+        self.http.arxiv()
+        d = self.get("bib.bib1").json()
+        self.assertEqual(d["enriched"]["arxiv_id"], "2301.00001")
+        self.assertTrue(d["partial"])
+        self.assertEqual(sum("semanticscholar" in u for u in self.http.calls), 1)
+
+    def test_s2_rate_limit_marks_down_and_keeps_arxiv(self):
+        self.http.arxiv().route("semanticscholar.org", "rate limited", status=429)
+        d = self.get("bib.bib1").json()
+        self.assertEqual(d["enriched"]["sources"], ["arxiv"])
+        self.assertTrue(d["partial"])
+        self.assertNotIn("s2", self.stored()["bib.bib1"])
+        n = len(self.http.calls)
+        self.get("bib.bib4")  # arXiv는 캐시, S2는 쉬는 중 → 외부 호출 0
+        self.assertEqual(len(self.http.calls), n)
+
+    def test_short_title_guess_skips_search(self):
+        idx = {"bib": {"b": {"id": "b", "title_guess": "Notes.", "arxiv_id": None, "doi": None}}}
+        self.assertEqual(cc.title_query(idx["bib"]["b"]), "")
+        self.assertEqual(asyncio.run(cc.arxiv_title(idx["bib"]["b"])), None)
+        self.assertEqual(self.http.calls, [])
+
+
+class CiteCardConcurrencyTests(AsyncCoreTestCase):
+    def setUp(self):
+        super().setUp()
+        cc._down.clear()
+
+    async def test_concurrent_taps_share_one_arxiv_batch(self):
+        self.http.route("export.arxiv.org", lambda url: fixture("arxiv_atom.xml"))
+        self.http.route("semanticscholar.org", None, status=404)
+        a, b, c = await asyncio.gather(*(cc.cite_card(self.paper_id, x) for x in ("bib.bib1", "bib.bib4", "bib.bib1")))
+        self.assertEqual(sum("export.arxiv.org" in u for u in self.http.calls), 1)
+        self.assertEqual(json.loads(a.body)["enriched"]["arxiv_id"], "2301.00001")
+        self.assertEqual(json.loads(b.body)["enriched"]["arxiv_id"], "2302.00002")
+        self.assertEqual(json.loads(c.body), json.loads(a.body))
+        cache = core.read_json(core.task_path(self.paper_id, "cite-cards"))
+        self.assertEqual(set(k for k in cache if k.startswith("bib.")), {"bib.bib1", "bib.bib4"})
+
+
+class GithubTests(Base):
+    REPO = {"full_name": "example/sparse-moe", "description": "Sparse MoE", "stargazers_count": 1234, "forks_count": 5,
+            "language": "Python", "pushed_at": "2026-10-01T00:00:00Z", "topics": ["moe", "llm"], "archived": False,
+            "license": {"spdx_id": "MIT"}, "homepage": "javascript:alert(1)"}
+
+    def test_repo_preview_cached(self):
+        self.http.route("api.github.com/repos/example/sparse-moe", js(self.REPO))
+        r = self.client.get("/api/cite-cards/github", params={"repo": "example/sparse-moe"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers.get("x-offline-cacheable"), "1")
+        d = r.json()
+        self.assertEqual((d["stars"], d["language"], d["license"]), (1234, "Python", "MIT"))
+        self.assertIsNone(d["homepage"], "http(s)가 아닌 홈페이지는 버림")
+        self.client.get("/api/cite-cards/github", params={"repo": "Example/Sparse-MoE.git"})
+        self.assertEqual(len(self.http.calls), 1, "같은 저장소는 디스크 캐시 (대소문자·.git 무시)")
+
+    def test_rejects_non_repo_input_without_fetching(self):
+        for bad in ("example", "../etc/passwd", "a/b/c", "https://evil.example/x", "ex ample/x", "-x/y/../z"):
+            self.assertEqual(self.client.get("/api/cite-cards/github", params={"repo": bad}).status_code, 400, bad)
+        self.assertEqual(self.http.calls, [])
+
+    def test_missing_repo_404_and_rate_limit_503_then_stale(self):
+        self.http.route("repos/nobody/none", "{}", status=404)
+        self.assertEqual(self.client.get("/api/cite-cards/github", params={"repo": "nobody/none"}).status_code, 404)
+        self.http.route("repos/example/limited", "{}", status=403)
+        self.assertEqual(self.client.get("/api/cite-cards/github", params={"repo": "example/limited"}).status_code, 503)
+        n = len(self.http.calls)
+        self.client.get("/api/cite-cards/github", params={"repo": "example/other"})
+        self.assertEqual(len(self.http.calls), n, "제한에 걸리면 잠시 GitHub를 부르지 않음")
+        # 오래된 캐시는 GitHub가 안 될 때 그대로 사용
+        core.write_json(core.task_path("github", "cite-cards.example.stale"), {"ts": 0, "data": {"full_name": "example/stale"}})
+        r = self.client.get("/api/cite-cards/github", params={"repo": "example/stale"})
+        self.assertEqual(r.json()["full_name"], "example/stale")
+
+
+class PureTests(Base):
+    def test_similar_and_norm(self):
+        self.assertEqual(cc.norm_title("Attention: Mechanisms (Revisited)!"), "attention mechanisms revisited")
+        self.assertEqual(cc.norm_title("Scaling $O(n^2)$ attention"), "scaling attention")
+        self.assertGreaterEqual(cc.similar("Sparse mixtures of experts for everyone.", "Sparse Mixtures of Experts for Everyone"), 0.9)
+        self.assertLess(cc.similar("Attention mechanisms revisited", "Attention is all you need"), 0.9)
+
+    def test_merge_priorities_and_empty(self):
+        self.assertIsNone(cc.merge({}))
+        self.assertIsNone(cc.merge({"arxiv": None, "s2": None}))
+        m = cc.merge({"arxiv": {"title": "A", "summary": "", "venue": None},
+                      "s2": {"title": "B", "summary": "S2 abs", "venue": "NeurIPS", "citations": 0, "tldr": "t"}})
+        self.assertEqual((m["title"], m["summary"], m["venue"], m["citations"], m["tldr"]), ("A", "S2 abs", "NeurIPS", 0, "t"))
+
+    def test_slim_s2_drops_arxiv_venue(self):
+        self.assertIsNone(cc.slim_s2({**S2_BIB1, "venue": "arXiv.org"})["venue"])
+        self.assertEqual(cc.slim_s2({"title": "x"})["authors"], [])
+
+    def test_sources(self):
+        self.assertEqual(cc.sources({"arxiv_id": "1", "doi": "d"}), ["arxiv", "s2"])
+        self.assertEqual(cc.sources({"arxiv_id": None, "doi": "d"}), ["s2", "crossref"])
+        self.assertEqual(cc.sources({"arxiv_id": None, "doi": None}), ["arxiv", "s2"])
+
+    def test_get_json_maps_status(self):
+        self.http.route("x.test/404", "", status=404).route("x.test/500", "", status=500).route("x.test/bad", "not json")
+        self.http.route("x.test/err", httpx.ReadTimeout("slow"))
+        self.assertIsNone(asyncio.run(cc.get_json("https://x.test/404")))
+        for u in ("500", "bad", "err", "unrouted"):
+            with self.assertRaises(cc.SourceDown):
+                asyncio.run(cc.get_json(f"https://x.test/{u}"))
