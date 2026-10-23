@@ -15,7 +15,7 @@
     <button data-q="한국어로 번역해줘">번역</button>
     <button data-q="논문 전체 맥락에서 이 부분이 왜 중요한지 알려줘">왜 중요?</button>
   </div>
-  <form id="ask-form"><input id="q" placeholder="직접 질문하기"><button>↑</button></form>
+  <form id="ask-form"><input id="q" placeholder="직접 질문하기"><button type="button" id="mic" aria-label="음성으로 질문">🎤</button><button>↑</button></form>
   <div id="answer" class="answer"></div>
 </section>
 
@@ -24,4 +24,5 @@
   fetch(`/api/prewarm/${ARXIV_ID}`, { method: "POST" });
 </script>
 <script src="/static/app.js"></script>
+<script src="/static/voice.js"></script>
 {% endblock %}
