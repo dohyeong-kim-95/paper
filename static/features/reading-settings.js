@@ -167,17 +167,39 @@
   function markOverflow() {
     if (!paper) return;
     const els = [...paper.querySelectorAll(WIDE)];
-    // 줄 안 수식이 화면보다 넓으면(긴 것만 봄) 자기 줄로 내려 그 안에서 스크롤 (rs-wide-math → display: block = block math)
-    const inl = [...paper.querySelectorAll('math:not([display="block"])')].filter(m => (m.getAttribute("alttext") || "").length > 30);
-    const limit = paper.clientWidth - 2 * cur.margin;
-    // 먼저 다 읽고 나서 씀 (레이아웃 한 번). 이미 내린 수식은 아직 넘치는지로 판단 (안 그러면 켰다 껐다 반복)
+    // 줄 안 수식이 본문 칸 밖으로 나가면(긴 것만 봄) 자기 줄로 내려 그 안에서 스크롤 (rs-wide-math → display: block).
+    // 표 안 수식(align·eqnarray 칸)은 빼: 표 자체가 WIDE라 스크롤됨
+    const inl = [...paper.querySelectorAll('math:not([display="block"])')]
+      .filter(m => !m.closest("table") && (m.getAttribute("alttext") || "").length > 30);
+    // 들여쓰기(목록 등)도 따지도록 폭이 아니라 위치로 판단
+    const pr = paper.getBoundingClientRect(), lo = pr.left + cur.margin - 1, hi = pr.right - cur.margin + 1;
+    // 이미 내린 수식은 레이아웃(폭·글자·여백)이 그대로면 그대로 둠 (안 그러면 켰다 껐다 반복)
+    const key = [paper.clientWidth, cur.size, cur.lh, cur.margin, cur.font].join("|");
+    // 먼저 다 읽고 나서 씀
     const over = els.map(el => el.scrollWidth - el.clientWidth > 2);
-    const wide = inl.map(m => (m.classList.contains("rs-wide-math") ? m.scrollWidth - m.clientWidth > 2 : m.getBoundingClientRect().width > limit));
-    inl.forEach((m, i) => { m.classList.toggle("rs-wide-math", wide[i]); if (wide[i]) { els.push(m); over.push(true); } });
-    els.forEach((el, i) => {
-      el.classList.toggle("rs-ovf", over[i]);
-      if (over[i]) edge(el); else el.classList.remove("rs-mid", "rs-end");
+    const wide = inl.map(m => {
+      if (m.classList.contains("rs-wide-math")) return m.getAttribute("data-rs-key") === key || m.scrollWidth - m.clientWidth > 2;
+      const r = m.getBoundingClientRect();
+      return r.right > hi || r.left < lo;
     });
+    inl.forEach((m, i) => {
+      m.classList.toggle("rs-wide-math", wide[i]);
+      if (wide[i]) m.setAttribute("data-rs-key", key); else m.removeAttribute("data-rs-key");
+    });
+    // 내린 뒤 실제로 넘치는지 다시 읽음. 후보 수식은 매번 모두 처리 (더 이상 넓지 않으면 흐림 클래스도 지움)
+    const mOver = inl.map((m, i) => wide[i] && m.scrollWidth - m.clientWidth > 2);
+    const all = els.concat(inl), allOver = over.concat(mOver);
+    all.forEach((el, i) => {
+      el.classList.toggle("rs-ovf", allOver[i]);
+      if (allOver[i]) edge(el); else el.classList.remove("rs-mid", "rs-end");
+    });
+    // 예전에 표시됐지만 이제 후보가 아닌 수식(표 안 등)에 남은 클래스 정리
+    const set = new Set(all);
+    for (const m of paper.querySelectorAll("math.rs-wide-math, math.rs-ovf")) {
+      if (set.has(m)) continue;
+      m.classList.remove("rs-wide-math", "rs-ovf", "rs-mid", "rs-end");
+      m.removeAttribute("data-rs-key");
+    }
   }
   document.addEventListener("scroll", e => {
     const t = e.target;
@@ -322,8 +344,10 @@
     if (e.key !== store.key(KEY)) return;
     const prev = cur;
     cur = clampSettings(store.get(KEY));
-    apply(prev);
+    if (["size", "lh", "margin", "font"].some(k => cur[k] !== prev[k])) keepPlace(() => apply(prev));
+    else apply(prev);
     render();
+    for (const k of Object.keys(cur)) if (cur[k] !== prev[k]) emit(k, cur[k]);
   });
 
   // ---------- 설정 peek ----------

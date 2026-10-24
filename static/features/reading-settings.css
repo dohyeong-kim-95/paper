@@ -42,19 +42,19 @@
 /* 양쪽 정렬: 사파리는 접두사가 있어야 하이픈 */
 :root[data-justify="1"] .paper .ltx_p { -webkit-hyphens: auto; }
 
-/* ---------- 다크·세피아: 그림은 뒤집지 않고 밝은 바탕을 깔아 줌 (투명 PNG·TikZ SVG의 검은 선이 보이게) ---------- */
-:root[data-theme="dark"] #paper :is(img, svg.ltx_picture),
-:root[data-theme="sepia"] #paper :is(img, svg.ltx_picture) { background: #fff; border-radius: 4px; }
-:root[data-theme="dark"] #paper img { filter: brightness(.9); }
+/* ---------- 다크·세피아 (본문과 peek에 복제된 본문 모두): 그림은 뒤집지 않고 밝은 바탕을 깔아 줌 (투명 PNG·TikZ SVG의 검은 선이 보이게) ---------- */
+:root[data-theme="dark"] :is(#paper, .pr-peek-body) :is(img, svg.ltx_picture),
+:root[data-theme="sepia"] :is(#paper, .pr-peek-body) :is(img, svg.ltx_picture) { background: #fff; border-radius: 4px; }
+:root[data-theme="dark"] :is(#paper, .pr-peek-body) img { filter: brightness(.9); }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]):not([data-theme="sepia"]) #paper :is(img, svg.ltx_picture) { background: #fff; border-radius: 4px; }
-  :root:not([data-theme="light"]):not([data-theme="sepia"]) #paper img { filter: brightness(.9); }
+  :root:not([data-theme="light"]):not([data-theme="sepia"]) :is(#paper, .pr-peek-body) :is(img, svg.ltx_picture) { background: #fff; border-radius: 4px; }
+  :root:not([data-theme="light"]):not([data-theme="sepia"]) :is(#paper, .pr-peek-body) img { filter: brightness(.9); }
 }
 
 /* 저자 색: 새 LaTeXML은 변수로 냄 (style="--ltx-fg-color:…") → 실제 색으로. 다크·세피아에서 안 읽히는 색은 JS가 고친 색(--rs-fg) */
-#paper [style*="--ltx-fg-color"] { color: var(--ltx-fg-color); }
-#paper [style*="--ltx-bg-color"] { background-color: var(--ltx-bg-color); }
-#paper .rs-recolor { color: var(--rs-fg) !important; }
+#paper [style*="--ltx-fg-color"], .pr-peek-body [style*="--ltx-fg-color"] { color: var(--ltx-fg-color); }
+#paper [style*="--ltx-bg-color"], .pr-peek-body [style*="--ltx-bg-color"] { background-color: var(--ltx-bg-color); }
+#paper .rs-recolor, .pr-peek-body .rs-recolor { color: var(--rs-fg) !important; }
 
 /* ---------- 긴 수식·표: 블록 안에서만 가로 스크롤, 넘칠 때(rs-ovf) 가장자리를 흐려 '더 있음' 표시 ---------- */
 #paper figure.ltx_table, #paper .ltx_listing, #paper pre { max-width: 100%; overflow-x: auto; }
@@ -77,11 +77,11 @@
   opacity: .35; transition: opacity .25s ease; }
 #paper.rs-focus .rs-cur { opacity: 1; transition: opacity .25s ease; }
 
-/* ---------- 넓은 화면(가로 1000px+, 시트 닫힘) + 번역 '둘다'(html.rs-tr-both): 원문·번역을 문단별로 나란히 ---------- */
-@media (min-width: 1000px) and (orientation: landscape) {
+/* ---------- 넓은 화면(가로 900px+, 시트 닫힘) + 번역 '둘다'(html.rs-tr-both): 원문·번역을 문단별로 나란히 ---------- */
+@media (min-width: 900px) and (orientation: landscape) {
   .rs-tr-both body:not(.pr-sheet-open) #paper:has(.tr-ko) { max-width: 1240px; }
   .rs-tr-both body:not(.pr-sheet-open) #paper :is(.ltx_para, .ltx_abstract):has(> .ltx_p + .tr-ko):not(:has(> .tr-hide)) {
-    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 28px; align-items: start; }
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 20px; align-items: start; }
   .rs-tr-both body:not(.pr-sheet-open) #paper :is(.ltx_para, .ltx_abstract):has(> .ltx_p + .tr-ko):not(:has(> .tr-hide)) > * { grid-column: 1 / -1; }
   .rs-tr-both body:not(.pr-sheet-open) #paper :is(.ltx_para, .ltx_abstract):has(> .ltx_p + .tr-ko):not(:has(> .tr-hide)) > .ltx_p { grid-column: 1; margin-top: 0; }
   .rs-tr-both body:not(.pr-sheet-open) #paper :is(.ltx_para, .ltx_abstract):has(> .ltx_p + .tr-ko):not(:has(> .tr-hide)) > .tr-ko { grid-column: 2; margin-top: 0; }
