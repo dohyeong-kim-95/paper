@@ -1,4 +1,5 @@
-/* daily-feed: 홈 '오늘의 새 논문' (.home button/input 기본 스타일을 두 클래스 선택자로 덮음) */
+/* daily-feed: 홈 '오늘의 새 논문' (.home button/input 기본 스타일을 두 클래스 선택자로 덮음).
+   입력칸 글자는 16px 이상: 그보다 작으면 iOS Safari가 포커스 때 화면을 확대함 */
 .df-root .df-chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
 .df-root .df-chips::-webkit-scrollbar { display: none; }
 .df-root .df-chip, .df-peek .df-chip { flex: none; padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px;
@@ -8,7 +9,7 @@
 
 .df-root .df-tools { display: flex; gap: 6px; align-items: center; margin: 8px 0 4px; }
 .df-root .df-q { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
-  background: var(--card); color: var(--fg); font-size: 14px; }
+  background: var(--card); color: var(--fg); font-size: 16px; }
 .df-root .df-tool { flex: none; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px;
   background: none; color: var(--muted); font-size: 13px; line-height: 1.3; }
 .df-root .df-tool[aria-pressed="true"], .df-root .df-mode { color: var(--accent); border-color: var(--accent); }
@@ -26,7 +27,8 @@
 
 .df-root .df-list[aria-busy="true"] { opacity: .55; transition: opacity .2s; }
 .df-root .df-group { margin: 16px 0 6px; font-size: 13px; color: var(--muted); font-weight: 600; }
-.df-root .df-group[hidden], .df-root .df-card[hidden] { display: none; }
+/* 필터로 숨긴 카드·묶음: 카드 모드의 display: flex(.df-root .df-brief .df-card)보다 구체적이어야 함 */
+.df-root .df-list .df-group[hidden], .df-root .df-list .df-card[hidden] { display: none; }
 .df-root .df-empty { color: var(--muted); font-size: 14px; }
 
 .df-root .df-card { margin: 0 0 10px; padding: 12px 14px; border-radius: 12px; background: var(--card); }
@@ -34,9 +36,6 @@
 .df-root .df-cat { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .df-root .df-new { padding: 0 6px; border-radius: 6px; background: var(--accent); color: #fff; font-weight: 600; }
 .df-root .df-title { display: block; margin-top: 4px; color: var(--fg); font-weight: 600; font-size: 16px; line-height: 1.4; text-decoration: none; }
-.df-root .df-en-title { margin-top: 2px; color: var(--muted); font-size: 13px; line-height: 1.35; }
-.df-root .df-blurb { margin: 6px 0 0; font-size: 14px; line-height: 1.5; }
-.df-root .df-en-title[hidden], .df-root .df-blurb[hidden] { display: none; }
 .df-root .df-authors { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; margin-top: 6px; font-size: 13px; color: var(--muted); }
 .df-root .df-au { padding: 0; border: 0; background: none; color: var(--muted); font-size: 13px; text-decoration: underline dotted; text-underline-offset: 3px; }
 .df-root .df-abs { margin-top: 6px; font-size: 14px; }
@@ -53,7 +52,6 @@
 .df-root .df-brief .df-card { display: flex; flex-direction: column; min-height: 100%; margin: 0 0 8px; overflow-y: auto;
   scroll-snap-align: start; scroll-snap-stop: always; }
 .df-root .df-brief .df-title { font-size: 19px; }
-.df-root .df-brief .df-blurb { font-size: 16px; }
 .df-root .df-brief .df-actions { margin-top: auto; padding-top: 12px; }
 
 /* 편집 peek */
@@ -64,7 +62,7 @@
 .df-peek .df-x { min-width: 28px; min-height: 28px; border: 0; background: none; color: var(--muted); font-size: 13px; }
 .df-peek .df-add { display: flex; gap: 6px; margin: 8px 0; }
 .df-peek .df-input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
-  background: var(--bg); color: var(--fg); font-size: 15px; }
+  background: var(--bg); color: var(--fg); font-size: 16px; }
 .df-peek .df-btn { padding: 8px 12px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font-size: 14px; }
 .df-peek .df-lib { width: 100%; margin-top: 8px; background: var(--bg); color: var(--accent); }
 .df-peek .df-suggest { display: flex; flex-wrap: wrap; gap: 6px; }
