@@ -125,6 +125,71 @@ test("논문 화면: 기록·인용 표시(CiteSee)·즐겨찾기·상태·태�
   assert.deepEqual(page.errors, []);
 });
 
+test("논문 화면: 읽은 시간 기록은 사용자가 고른 상태를 덮어쓰지 않음, '완료로 표시'는 떠날 때 권하지 않음", async browser => {
+  const page = await newPage(browser, {
+    "pr:library": { "2401.00001": { id: "2401.00001", title: "T", readMs: 59500, status: "to-read" } },
+    "pr:toc-progress:pos:2401.00001": { pct: 95, ts: Date.now() },
+  });
+  await open(page, PAPER);
+  const rec = async () => (await lib(page))["2401.00001"];
+  // 화면이 보이고 방금 활동이 있었던 1초 남짓을 화면 떠날 때(pagehide) 기록
+  const flushOnLeave = async () => {
+    await page.mouse.wheel(0, 40);
+    await page.waitForTimeout(1300);
+    await page.mouse.wheel(0, -40);
+    await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+  };
+  await flushOnLeave();
+  let r = await rec();
+  assert.equal(r.status, "reading", "1분을 넘기는 순간 '읽을 예정' → '읽는 중'");
+  const readMs = r.readMs;
+  assert.ok(readMs >= 60000);
+
+  await menu(page, "읽기 상태");
+  const peek = page.locator(".pr-peek.lib-peek");
+  await peek.locator("button", { hasText: "읽을 예정" }).click();
+  await page.keyboard.press("Escape");
+  await flushOnLeave();
+  r = await rec();
+  assert.equal(r.status, "to-read", "고른 '읽을 예정' 유지");
+  assert.ok(r.readMs > readMs, "읽은 시간은 계속 더함");
+
+  await menu(page, "읽기 상태");
+  await peek.locator("button", { hasText: "읽을 예정" }).click(); // 켜진 칩을 다시 누르면 해제
+  await page.keyboard.press("Escape");
+  await flushOnLeave();
+  assert.equal((await rec()).status, undefined, "해제도 유지");
+
+  // 90%·5분 조건이 아니어도: 떠날 때의 기록에서는 '거의 다 읽었어요' 토스트·한 번만 권함 표시가 생기지 않음
+  await page.evaluate(() => {
+    const l = JSON.parse(localStorage.getItem("pr:library"));
+    l["2401.00001"].readMs = 10 * 60000;
+    localStorage.setItem("pr:library", JSON.stringify(l));
+  });
+  await flushOnLeave();
+  assert.equal(await page.evaluate(() => /거의 다 읽었어요/.test(document.getElementById("pr-toast")?.textContent || "")), false);
+  assert.equal(await page.evaluate(() => sessionStorage.getItem("pr:library:asked-done:2401.00001")), null);
+  assert.deepEqual(page.errors, []);
+});
+
+test("홈: ⋯ peek의 '열기'는 peek을 닫고 이동 (논문에서 뒤로 한 번이면 홈, 표지 항목 없음)", async browser => {
+  const page = await newPage(browser, { "pr:library": { "2401.00001": { id: "2401.00001", title: "Sparse Mixtures", opened: Date.now() - 1000 } } });
+  await open(page, `${BASE}/`);
+  const sec = page.locator('[data-section="library"]');
+  await sec.locator(".lib-recent .lib-more").first().click();
+  await page.locator(".pr-peek.lib-peek button", { hasText: "열기" }).click();
+  await page.waitForURL(PAPER);
+  await page.waitForFunction(() => window.PaperApp && document.readyState === "complete");
+  await page.goBack();
+  await page.waitForFunction(() => window.PaperApp && document.readyState === "complete");
+  assert.equal(page.url(), `${BASE}/`);
+  assert.equal(await page.locator(".pr-peek").count(), 0, "닫힌 peek");
+  assert.equal(await page.evaluate(() => !!(history.state && history.state.prLayer)), false, "표지 항목 아님");
+  await page.goBack();
+  assert.equal(page.url(), "about:blank", "뒤로 한 번 더 = 홈을 떠남 (같은 홈 항목이 또 있지 않음)");
+  assert.deepEqual(page.errors, []);
+});
+
 test("홈: 이어 읽기(진행률)·즐겨찾기·전체 기록 필터·모든 노트·삭제 실행 취소", async browser => {
   const now = Date.now();
   const page = await newPage(browser, {
@@ -158,10 +223,13 @@ test("홈: 이어 읽기(진행률)·즐겨찾기·전체 기록 필터·모든 
   const titles = () => sec.locator(".lib-list .lib-card-title").allTextContents();
   assert.deepEqual(await titles(), ["★ Efficient routing"]);
 
+  const focused = () => page.evaluate(() => document.activeElement && document.activeElement.dataset.fk);
   await tab("전체 기록 3").click();
   assert.deepEqual(await titles(), ["Sparse Mixtures", "★ Efficient routing", "To read later"]);
+  assert.equal(await focused(), "tab:all", "다시 그린 뒤에도 누른 탭에 포커스");
   await sec.locator(".lib-chips .lib-chip", { hasText: "읽을 예정" }).click();
   assert.deepEqual(await titles(), ["To read later"]);
+  assert.equal(await focused(), "status:to-read", "누른 칩에 포커스");
   await sec.locator(".lib-chips .lib-chip", { hasText: "전체" }).first().click();
   await sec.locator(".lib-chips .lib-chip", { hasText: "#routing" }).click();
   assert.deepEqual(await titles(), ["★ Efficient routing"]);
@@ -191,6 +259,15 @@ test("홈: 이어 읽기(진행률)·즐겨찾기·전체 기록 필터·모든 
   assert.equal(await notes.first().locator(".lib-qa .lib-md").textContent(), "");
   await notes.first().locator("summary").click();
   await until(page, () => /지식/.test(document.querySelector('[data-section="library"] .lib-qa .lib-md').textContent));
+  // 앱으로 돌아옴: 바뀐 것이 없으면 다시 그리지 않음. 바뀌면 다시 그려도 펼친 답은 펼친 채로
+  const qaOpen = () => page.evaluate(() => [...document.querySelectorAll('[data-section="library"] .lib-qa')].map(d => d.open && /지식/.test(d.textContent)));
+  await page.evaluate(() => { document.querySelector('[data-section="library"] .lib-note').dataset.probe = "1"; });
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await page.evaluate(() => window.dispatchEvent(new StorageEvent("storage", { key: "pr:reading-settings" })));
+  assert.equal(await sec.locator(".lib-note[data-probe]").count(), 1, "그대로");
+  await page.evaluate(() => PaperApp.feature("library").add({ id: "2401.00001", tags: ["fresh"] }));
+  assert.equal(await sec.locator(".lib-note[data-probe]").count(), 0, "다시 그림");
+  assert.deepEqual(await qaOpen(), [true], "펼친 답 유지");
   await sec.locator(".lib-chips .lib-chip", { hasText: "전체" }).first().click();
   await sec.locator(".lib-search").fill("증류");
   await until(page, () => document.querySelectorAll('[data-section="library"] .lib-note').length === 1);
