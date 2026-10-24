@@ -2,7 +2,8 @@
 const { test, assert, load } = require("./_runner");
 const hn = load("static/features/highlights-notes.js");
 const { COLORS, normPrefs, typeOf, makeItem, addQa, sortByPosition, hitAt, overlaps, flattenQa, turnsOf,
-  serialPresets, threadRecord, upsertThread, notesDigest, groupRuns, toMarkdown, MAX_THREADS } = hn;
+  serialPresets, threadRecord, upsertThread, notesDigest, groupRuns, toMarkdown, MAX_THREADS,
+  threadsOf, linkThread, safeEndpoint, sanitizeThread, mergeNote } = hn;
 
 const anchor = (quote, paraId = "S1.p1") => ({ quote, prefix: "pre ", suffix: " suf", paraId });
 
@@ -58,6 +59,44 @@ test("hitAt: 탭 위치를 포함하는 가장 짧은 구간, overlaps", () => {
   assert.equal(overlaps({ start: 0, end: 10 }, { start: 9, end: 12 }), true);
   assert.equal(overlaps({ start: 0, end: 10 }, { start: 10, end: 12 }), false);
   assert.equal(overlaps(null, { start: 0, end: 1 }), false);
+  // 수식 한 덩어리 [385, 395)를 탭: 그 수식과 겹치는 항목 (하이라이트가 수식 안쪽에서 시작해도)
+  const math = [{ id: "hl", start: 386, end: 420 }, { id: "far", start: 500, end: 510 }];
+  assert.equal(hitAt(math, 385), null);
+  assert.equal(hitAt(math, 385, 395), "hl");
+  assert.equal(hitAt(math, 420, 430), null);
+});
+
+test("linkThread / threadsOf: 한 항목에 대화 여럿, thread는 가장 최근", () => {
+  const it = makeItem({ anchor: anchor("x"), thread: "t1" });
+  assert.deepEqual(it.threads, ["t1"]);
+  linkThread(it, "t2");
+  linkThread(it, "t1");
+  assert.equal(it.thread, "t1");
+  assert.deepEqual(threadsOf(it), ["t2", "t1"]);
+  assert.deepEqual(threadsOf({ thread: "old" }), ["old"], "예전 저장 모양 (thread만)");
+  assert.deepEqual(threadsOf({}), []);
+});
+
+test("mergeNote: 내 메모를 덮어쓰지 않음", () => {
+  assert.equal(mergeNote("", "공유 메모"), "공유 메모");
+  assert.equal(mergeNote("내 메모", ""), "내 메모");
+  assert.equal(mergeNote("내 메모", "내 메모"), "내 메모");
+  assert.equal(mergeNote("내 메모: 중요", "남의 메모"), "내 메모: 중요\n\n---\n\n남의 메모");
+});
+
+test("safeEndpoint / sanitizeThread: 같은 출처 /api/ 경로만, extra는 평범한 객체만", () => {
+  assert.equal(safeEndpoint("/api/figure-explain/ask"), "/api/figure-explain/ask");
+  for (const bad of ["https://evil.example/collect", "//evil.example/api/x", "/api/../x", "/apix", "", null, 5, "/api//evil.example"]) {
+    assert.equal(safeEndpoint(bad), "/api/ask", String(bad));
+  }
+  const t = sanitizeThread({ id: 7, history: [], endpoint: "https://evil.example/c", extra: ["x"] });
+  assert.equal(t.id, "7");
+  assert.equal(t.endpoint, "/api/ask");
+  assert.deepEqual(t.extra, {});
+  assert.deepEqual(sanitizeThread({ id: "a", history: [], extra: { figure_id: "F1" } }).extra, { figure_id: "F1" });
+  assert.equal(sanitizeThread({ id: "a" }), null);
+  assert.equal(sanitizeThread(null), null);
+  assert.equal(threadRecord({ id: "s", history: [], endpoint: "https://x.y/z", extra: "s" }, null, null).endpoint, "/api/ask");
 });
 
 test("flattenQa / turnsOf: 저장한 Q&A ↔ 대화 기록", () => {

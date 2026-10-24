@@ -35,9 +35,18 @@
       id: newId(now), type: "hl", color: colorOf(color), anchor: cleanAnchor(anchor), note: String(note || ""),
       qa: (qa || []).map(x => ({ q: String(x.q || ""), a: String(x.a || "") })), ts: now,
     };
-    if (thread) it.thread = String(thread); // 이 답변이 나온 대화 (이어서 질문하면 그 대화 그대로)
+    if (thread) { it.thread = String(thread); it.threads = [it.thread]; } // 답변이 나온 대화들 (thread = 가장 최근, 이어서 질문하면 그 대화)
     if (source) it.source = String(source);
     it.type = typeOf(it);
+    return it;
+  }
+  const threadsOf = it => [...new Set([...(Array.isArray(it.threads) ? it.threads : []), ...(it.thread ? [it.thread] : [])].map(String))];
+  // 이 항목에 대화 하나를 더 붙임 (같은 자리에서 여러 대화를 저장해도 한 항목에)
+  function linkThread(it, tid) {
+    if (!tid) return it;
+    tid = String(tid);
+    it.threads = [...threadsOf(it).filter(x => x !== tid), tid];
+    it.thread = tid;
     return it;
   }
   function addQa(it, q, a, now = Date.now()) {
@@ -60,15 +69,23 @@
       .map(x => x.it);
   }
 
-  // 탭한 오프셋을 포함하는 가장 짧은 구간의 id
-  function hitAt(entries, off) {
+  // 탭한 오프셋을 포함하는 가장 짧은 구간의 id. end를 주면 [off, end)와 겹치는 구간 (수식 한 덩어리를 탭했을 때)
+  function hitAt(entries, off, end = null) {
     let best = null;
     for (const e of entries || []) {
-      if (e && e.start != null && off >= e.start && off < e.end && (!best || e.end - e.start < best.end - best.start)) best = e;
+      const hit = e && e.start != null && (end != null ? off < e.end && e.start < end : off >= e.start && off < e.end);
+      if (hit && (!best || e.end - e.start < best.end - best.start)) best = e;
     }
     return best ? best.id : null;
   }
   const overlaps = (a, b) => !!(a && b && a.start < b.end && b.start < a.end);
+
+  // 공개 add()로 같은 자리에 다시 들어온 메모: 내 메모는 지우지 않음 (비었으면 채우고, 다르면 구분선 아래에 덧붙임)
+  function mergeNote(mine, incoming) {
+    const a = String(mine || "").trim(), b = String(incoming || "").trim();
+    if (!b || a.includes(b)) return a;
+    return a ? `${a}\n\n---\n\n${b}` : b;
+  }
 
   const flattenQa = qa => (qa || []).flatMap(x => [{ role: "user", content: String(x.q) }, { role: "assistant", content: String(x.a) }]);
   const turnsOf = t => {
@@ -76,6 +93,15 @@
     for (let i = 0; i + 1 < hist.length; i += 2) out.push({ q: String(shown[i / 2] || hist[i].content || ""), a: String(hist[i + 1].content || "") });
     return out;
   };
+
+  // 저장된(또는 백업에서 가져온) 질문 기록의 endpoint·extra 검사: 같은 출처의 /api/… 경로만, extra는 평범한 객체만
+  const API_PATH = /^\/api\/[a-z0-9/_-]+$/;
+  const safeEndpoint = e => (typeof e === "string" && API_PATH.test(e) && !e.includes("//") ? e : "/api/ask");
+  const isPlain = v => !!v && typeof v === "object" && !Array.isArray(v) && [Object.prototype, null].includes(Object.getPrototypeOf(v));
+  function sanitizeThread(t) {
+    if (!t || typeof t !== "object" || !t.id || !Array.isArray(t.history)) return null;
+    return { ...t, id: String(t.id), endpoint: safeEndpoint(t.endpoint), extra: isPlain(t.extra) ? t.extra : {} };
+  }
 
   // 세션 프리셋 중 저장할 수 있는 것만 (문자열, 또는 q가 문자열이고 run이 없는 것). 없으면 null
   function serialPresets(list) {
@@ -91,7 +117,8 @@
     const rec = { id: String(s.threadId || s.id), anchor: prev ? prev.anchor || null : cleanAnchor(anchor) };
     for (const k of THREAD_FIELDS) rec[k] = clone(s[k]);
     rec.presets = serialPresets(s.presets);
-    if (!rec.endpoint) rec.endpoint = "/api/ask";
+    rec.endpoint = safeEndpoint(rec.endpoint);
+    if (!isPlain(rec.extra)) rec.extra = {};
     const first = (s.meta && s.meta[0] && s.meta[0].label) || (s.shown && s.shown[0]) || (s.history && s.history[0] && s.history[0].content) || "질문";
     rec.label = (prev && prev.label) || clip(oneLine(first), 80);
     rec.ts = now;
@@ -165,7 +192,7 @@
   }
 
   const api = {
-    COLORS, MAX_THREADS, normPrefs, typeOf, makeItem, addQa, sortByPosition, hitAt, overlaps, flattenQa, turnsOf,
+    COLORS, MAX_THREADS, normPrefs, typeOf, makeItem, addQa, threadsOf, linkThread, safeEndpoint, sanitizeThread, mergeNote, sortByPosition, hitAt, overlaps, flattenQa, turnsOf,
     serialPresets, threadRecord, upsertThread, notesDigest, groupRuns, toMarkdown,
   };
   if (typeof module !== "undefined") module.exports = api;
@@ -181,7 +208,8 @@
   const KIND_LABEL = { hl: "하이라이트", note: "메모", qa: "저장한 Q&A" };
   const loadList = ns => { const v = S.paper(ns, []); return Array.isArray(v) ? v.filter(x => x && typeof x === "object" && x.id) : []; };
   let items = loadList(NS).map(x => ({ ...x, qa: Array.isArray(x.qa) ? x.qa : [], anchor: cleanAnchor(x.anchor) }));
-  let threads = loadList(TNS).filter(t => Array.isArray(t.history));
+  const loadThreads = () => loadList(TNS).map(sanitizeThread).filter(Boolean);
+  let threads = loadThreads();
   let prefs = normPrefs(S.get(PREFS, null));
   const pos = new Map(), tpos = new Map(); // id → 본문에서 다시 찾은 {start, end} | null (이 페이지 동안 고정)
 
@@ -198,13 +226,39 @@
     fullToast();
     return false;
   }
-  // 질문 기록은 자동 저장: 용량이 모자라면 오래된 기록부터 비우고 다시
-  function saveThreads() {
-    while (!S.setPaper(TNS, threads)) {
-      if (threads.length <= 1) { fullToast(); return false; }
-      threads = threads.slice(1);
+  // 질문 기록은 자동 저장. 논문당 바이트 상한(그림 설명의 이미지 등 큰 기록), 용량이 모자라면
+  // 다른 논문까지 포함해 가장 오래된 기록부터 비우고 다시 (쓰기가 성공한 뒤에만 메모리의 목록을 바꿈)
+  const THREAD_BYTES = 1500000;
+  const sizeOf = v => { try { return JSON.stringify(v).length; } catch { return 0; } };
+  function evictOldestElsewhere() {
+    const mine = S.paperKey(TNS);
+    let best = null;
+    for (const full of S.keys(`${TNS}:`)) {
+      if (full === mine) continue;
+      const key = full.slice(S.PREFIX.length), list = S.get(key, null);
+      if (!Array.isArray(list)) continue;
+      list.forEach((t, i) => { if (!best || (t && t.ts || 0) < best.ts) best = { key, list, i, ts: (t && t.ts) || 0 }; });
+      if (!list.length) best = best || { key, list, i: -1, ts: 0 };
     }
+    if (!best) return false;
+    const rest = best.list.filter((_, i) => i !== best.i);
+    if (rest.length) { if (!S.set(best.key, rest)) S.del(best.key); } else S.del(best.key);
     return true;
+  }
+  function saveThreads() {
+    let list = threads.slice();
+    while (list.length > 1 && sizeOf(list) > THREAD_BYTES) list = list.slice(1);
+    for (let guard = 0; guard < 500; guard++) {
+      if (S.setPaper(TNS, list)) {
+        if (list.length !== threads.length) { const keep = new Set(list.map(t => t.id)); threads = threads.filter(t => keep.has(t.id)); }
+        return true;
+      }
+      if (evictOldestElsewhere()) continue;
+      if (list.length <= 1) break;
+      list = list.slice(1);
+    }
+    fullToast();
+    return false;
   }
   const savePrefs = () => S.set(PREFS, prefs);
 
@@ -266,17 +320,18 @@
   }
 
   // ---------- 저장·삭제 ----------
-  // 같은 자리에 이미 있으면 그 항목을 갱신 (색·메모)
+  // 같은 자리에 이미 있으면 그 항목을 씀: 색은 그대로, 메모는 내 메모를 지우지 않고 덧붙임 (prevNote: 실행 취소용)
   function addItem(anchor, p, { color, note, source } = {}) {
     const same = items.find(it => samePos(posOf(it), p));
     if (same) {
-      if (color) same.color = colorOf(color);
-      if (note) same.note = note;
+      const prevNote = same.note || "", merged = note ? mergeNote(prevNote, note) : prevNote.trim();
+      if (!note || merged === prevNote.trim()) return { id: same.id, created: false, noteChanged: false };
+      same.note = merged;
       same.type = typeOf(same);
       same.ts = Date.now();
       saveItems();
       changed();
-      return { id: same.id, created: false };
+      return { id: same.id, created: false, noteChanged: true, prevNote };
     }
     const it = makeItem({ anchor, color: color || prefs.color, note, source });
     if (!it.anchor) return null;
@@ -311,7 +366,12 @@
       const r = addItem(anchor, p, { color: opts.color, note: opts.note, source: opts.source });
       if (!r) return null;
       if (r.created) UI.toast("내 하이라이트에 저장했습니다", { actionLabel: "실행 취소", onAction: () => removeItem(r.id, { undo: false }) });
-      else UI.toast("이미 내 하이라이트에 있습니다");
+      else if (r.noteChanged) {
+        UI.toast("이미 내 하이라이트에 있어 메모만 덧붙였습니다", {
+          actionLabel: "실행 취소",
+          onAction: () => { const it = items.find(x => x.id === r.id); if (it) setNote(it, r.prevNote); },
+        });
+      } else UI.toast("이미 내 하이라이트에 있습니다 (바꾼 것 없음)");
       return r.id;
     } catch (e) {
       console.error("[highlights-notes]", e);
@@ -360,7 +420,20 @@
   }
 
   // ---------- 질문 시트 연동 ----------
-  // 세션의 인용 위치: 선택에서 왔으면 그 앵커, 아니면 인용문을 본문에서 찾아 봄, 없으면 논문 전체(null)
+  // 항목에서 연 대화 (threadId → 항목 id): 그 대화의 기록·'노트에 저장'은 그 항목 자리에
+  const itemOfThread = new Map();
+  const linkedItem = tid => {
+    const id = itemOfThread.get(String(tid));
+    return (id && items.find(x => x.id === id)) || items.find(x => threadsOf(x).includes(String(tid))) || null;
+  };
+  const inPaper = el => !!(el && el !== paperEl && paperEl.contains(el));
+  // 인용문이 본문에 몇 번 나오는지 (공백 정규화, 2 이상이면 2)
+  function occurrences(q) {
+    const t = oneLine(A.index().text), i = t.indexOf(q);
+    return i < 0 ? 0 : t.indexOf(q, i + 1) < 0 ? 1 : 2;
+  }
+  // 세션의 인용 위치: 선택에서 왔으면 그 앵커. 아니면 인용문을 그 문단(selInfo.paraId, 아니면 context가 나오는 문단)
+  // 안에서 찾고, 문단을 모르면 본문에 한 번만 나올 때만. 그래도 모르면 null (점선·Q는 없이 패널의 질문 기록에만)
   function sessionAnchor(s) {
     const si = s.selInfo;
     if (si && si.anchored && si.text && si.start != null) {
@@ -368,10 +441,20 @@
     }
     const q = oneLine(s.quote || s.selection);
     if (q.length < 4) return null;
-    const o = A.locate(q);
+    let para = si && si.paraId ? document.getElementById(si.paraId) : null;
+    if (!inPaper(para)) para = null;
+    if (!para && s.context) {
+      // context(문단에서 잘라 온 글)의 앞부분이 나오는 문단
+      const head = oneLine(s.context.replace(/<my-notes>[\s\S]*$|<my-note>[\s\S]*$/, "")).slice(0, 80).trim();
+      const c = head.length >= 20 ? A.locate(head) : null;
+      const el = c && elAt(c.start);
+      const box = el && el.closest(".ltx_para, p, li, figcaption, td");
+      if (inPaper(box)) para = box;
+    }
+    const o = para ? A.locate(q, { root: para }) : occurrences(q) === 1 ? A.locate(q) : null;
     if (!o) return null;
     const t = A.quoteAt(A.index().text, o.start, o.end);
-    return { quote: t.quote, prefix: t.prefix, suffix: t.suffix, paraId: (si && si.paraId) || paraIdAt(o.start) };
+    return { quote: t.quote, prefix: t.prefix, suffix: t.suffix, paraId: (para && para.id) || paraIdAt(o.start) };
   }
 
   // 모든 시트 대화를 자동 저장 (질문 기록). 같은 threadId면 그 기록을 갱신
@@ -379,7 +462,8 @@
     if (d.restored || !d.session || !d.session.history || !d.session.history.length) return;
     const s = d.session;
     const prev = threads.find(t => t.id === String(s.threadId || s.id)) || null;
-    const rec = threadRecord(s, prev, prev ? null : sessionAnchor(s));
+    const from = prev ? null : linkedItem(s.threadId);
+    const rec = threadRecord(s, prev, prev ? null : from ? from.anchor : sessionAnchor(s));
     threads = upsertThread(threads, rec);
     tpos.delete(rec.id);
     saveThreads();
@@ -387,7 +471,7 @@
   });
 
   // 답변 아래 '노트에 저장' (자리 highlights-notes 30)
-  const savedItemFor = d => items.find(it => it.thread && it.thread === d.session.threadId && it.qa.some(x => x.a === d.text));
+  const savedItemFor = d => items.find(it => threadsOf(it).includes(String(d.session.threadId)) && it.qa.some(x => x.a === d.text));
   PaperApp.addAnswerAction({
     id: "highlights-notes", order: 30,
     render: d => {
@@ -410,19 +494,20 @@
   });
   function saveAnswer(d) {
     const s = d.session, q = d.shown || d.question;
-    let it = items.find(x => x.thread && x.thread === s.threadId);
+    // 이 대화를 이미 붙인 항목, 또는 이 대화를 연 항목('질문하기'·'이어서 질문')
+    let it = linkedItem(s.threadId);
     if (!it) {
-      const t = threads.find(x => x.id === s.threadId);
+      const t = threads.find(x => x.id === String(s.threadId));
       const anchor = t ? t.anchor : sessionAnchor(s), p = anchor && locateAnchor(anchor);
-      // 같은 자리에 이미 하이라이트·메모가 있으면 거기에 Q&A를 붙임 (그 부분을 탭하면 한 peek에 모두)
-      it = p ? items.find(x => !x.thread && samePos(posOf(x), p)) : null;
-      if (it) it.thread = String(s.threadId);
-      else {
-        it = makeItem({ anchor, color: prefs.color, thread: s.threadId });
+      // 같은 자리에 이미 항목이 있으면 거기에 Q&A를 붙임 (그 부분을 탭하면 한 peek에 모두, 대화가 여럿이어도)
+      it = p ? items.find(x => samePos(posOf(x), p)) : null;
+      if (!it) {
+        it = makeItem({ anchor, color: prefs.color });
         items.push(it);
         if (p) pos.set(it.id, p);
       }
     }
+    linkThread(it, s.threadId);
     addQa(it, q, d.text);
     saveItems();
     changed();
@@ -443,8 +528,8 @@
     if (cur && cur.threadId === t.id) { PaperApp.restoreSheet(); return; } // 이미 열린(내려둔) 같은 대화
     // 처음 연 기능의 origin·프리셋도 그대로 (논문에 질문 FAB가 이 대화를 자기 것으로 다시 엶)
     PaperApp.openSheet({
-      quote: t.quote, selection: t.selection, context: t.context, section: t.section, endpoint: t.endpoint,
-      extra: t.extra || {}, history: t.history, shown: t.shown, meta: t.meta, title: t.title || "질문",
+      quote: t.quote, selection: t.selection, context: t.context, section: t.section,
+      endpoint: safeEndpoint(t.endpoint), extra: isPlain(t.extra) ? t.extra : {}, history: t.history, shown: t.shown, meta: t.meta, title: t.title || "질문",
       presets: t.presets || null, threadId: t.id, origin: t.origin ?? "highlights-notes",
     });
   }
@@ -464,15 +549,15 @@
     if (t) { openThread(t.id); return; }
     const quote = (it.anchor && it.anchor.quote) || "";
     const { context, section } = contextFor(it);
-    if (it.qa.length) {
-      PaperApp.openSheet({
+    const note = it.note && it.note.trim() ? `\n<my-note>\n${it.note.trim()}\n</my-note>` : "";
+    const s = it.qa.length
+      ? PaperApp.openSheet({
         quote, selection: quote, context, section, history: flattenQa(it.qa),
         shown: it.qa.map(x => x.q), meta: it.qa.map(() => ({ label: null })), title: "저장한 Q&A", origin: "highlights-notes",
-      });
-      return;
-    }
-    const note = it.note && it.note.trim() ? `\n<my-note>\n${it.note.trim()}\n</my-note>` : "";
-    PaperApp.openSheet({ quote, selection: quote, context: context + note, section, origin: "highlights-notes" });
+      })
+      : PaperApp.openSheet({ quote, selection: quote, context: context + note, section, origin: "highlights-notes" });
+    // 이 대화의 기록·'노트에 저장'은 같은 문장이 다른 곳에 또 있어도 이 항목 자리에
+    if (s) itemOfThread.set(String(s.threadId || s.id), it.id);
   }
 
   // ---------- 화면: 바 버튼·선택 버튼·탭 ----------
@@ -497,21 +582,20 @@
     onClick: s => openMemo(s),
   });
 
-  // 저장한 부분을 탭: 항목 peek, 질문 기록만 있는 곳이면 그 대화 (링크 위 탭은 ref-peek·cite-cards에)
+  // 저장한 하이라이트 안을 탭: 항목 peek (§5.4: 저장한 하이라이트만. 질문 기록은 Q 표시·패널로 열고 탭은 가로채지 않음.
+  // 링크·각주 표시는 ref-peek·cite-cards에). 수식을 탭하면 그 수식 전체와 겹치는 항목 (하이라이트가 수식으로 시작해도)
   PaperApp.addTapHandler({
     id: "highlights-notes", priority: 90,
     test: e => {
-      if ((!items.length && !threads.length) || e.target.closest("a[href]")) return null;
+      if (!items.length || e.target.closest("a[href], .ltx_note_mark")) return null;
       const off = A.offsetAtPoint(e.clientX, e.clientY);
       if (off == null) return null;
-      const it = hitAt(items.map(x => ({ id: x.id, ...posOf(x) })), off);
-      if (it) return { kind: "item", id: it };
-      // 시트가 열려 있으면 질문 기록 자리 탭은 '내려두기'로 (방금 물은 그 문장을 탭해도 시트가 다시 열리지 않게)
-      if (PaperApp.isSheetOpen()) return null;
-      const t = hitAt(threads.map(x => ({ id: x.id, ...tposOf(x) })), off);
-      return t ? { kind: "thread", id: t } : null;
+      const m = e.target.closest("math"), seg = m ? A.index().nodeSeg.get(m) : null;
+      const entries = items.map(x => ({ id: x.id, ...posOf(x) }));
+      const id = seg ? hitAt(entries, seg.start, seg.end) : hitAt(entries, off);
+      return id ? { kind: "item", id } : null;
     },
-    handle: (e, hit) => (hit.kind === "item" ? openItem(hit.id) : openThread(hit.id)),
+    handle: (e, hit) => openItem(hit.id),
   });
 
   // ---------- 하이라이트 직후 도구 (색 4개·메모·삭제) ----------
@@ -574,10 +658,9 @@
     if (penDown) { penTimer = -1; return; } // 손을 떼면 다시
     const live = document.getSelection();
     const s = live && !live.isCollapsed ? PaperApp.sel() : null;
-    root.classList.remove("hn-pen-sel");
-    if (!s || !s.anchored) return;
-    const r = addFromSel(s);
-    if (!r) return;
+    const r = s && s.anchored ? addFromSel(s) : null;
+    // 칠했으면 hn-pen-sel은 그대로 두어 선택 버튼 줄이 숨겨진 채로 사라지게 (선택이 풀리는 paper:selection null에서 뗌)
+    if (!r) { root.classList.remove("hn-pen-sel"); return; }
     live.removeAllRanges();
     showQuick(r.id);
   }
@@ -682,7 +765,8 @@
           h("button", { type: "button", class: "hn-link", text: it.note ? "메모 편집" : "메모 추가", onclick: () => { editing = true; render(); } }));
       if (!editing && it.note) renderAnswerNowSafe(note.firstChild, it.note);
       const p = posOf(it);
-      const near = p ? threads.filter(t => t.id !== it.thread && overlaps(tposOf(t), p)) : [];
+      const mine = threadsOf(it); // 이 항목에 저장한 다른 대화들 + 이 부분의 질문 기록
+      const near = threads.filter(t => t.id !== it.thread && (mine.includes(t.id) || (p && overlaps(tposOf(t), p))));
       body.replaceChildren(
         h("blockquote", { class: "hn-quote", dataset: { c: colorOf(it.color) }, text: it.anchor ? it.anchor.quote : "논문 전체" }),
         it.anchor ? swatches(it, c => { setColor(it, c); render(); }) : null,
@@ -838,7 +922,7 @@
   // 다른 탭에서 바뀌면 다시 읽음
   window.addEventListener("storage", e => {
     if (e.key === S.paperKey(NS)) { items = loadList(NS).map(x => ({ ...x, qa: Array.isArray(x.qa) ? x.qa : [], anchor: cleanAnchor(x.anchor) })); pos.clear(); changed(); }
-    else if (e.key === S.paperKey(TNS)) { threads = loadList(TNS).filter(t => Array.isArray(t.history)); tpos.clear(); changed(); }
+    else if (e.key === S.paperKey(TNS)) { threads = loadThreads(); tpos.clear(); changed(); }
   });
 
   // 처음 칠하기는 한가할 때 (저장한 것이 있을 때만: 본문 색인 만들기 비용)

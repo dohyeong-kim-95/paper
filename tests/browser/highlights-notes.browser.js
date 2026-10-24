@@ -201,7 +201,7 @@ test("답변 → '노트에 저장'(선택 자리), 질문 기록 자동 저장,
   assert.deepEqual(page.errors, []);
 });
 
-test("같은 자리 하이라이트에 답변 저장은 합쳐짐, 질문 기록 자리 탭: 시트가 열려 있으면 내려두기, 닫혀 있으면 그 대화", async browser => {
+test("같은 자리 하이라이트에 답변 저장은 합쳐짐(대화 여럿도), 질문 기록 자리 탭은 가로채지 않고 Q 표시로 엶", async browser => {
   const page = await newPage(browser);
   await open(page);
   await highlight(page, "S2.p3", "the sparse model improves accuracy");
@@ -219,12 +219,31 @@ test("같은 자리 하이라이트에 답변 저장은 합쳐짐, 질문 기록
   await tapPainted(page, "hn-q", "Large language models", true);
   await until(page, () => !PaperApp.isSheetOpen() && !document.getElementById("sheet-pill").hidden);
   assert.equal(await page.evaluate(() => PaperApp.session.threadId), t2);
-  // 닫고 다시 탭 → 그 대화를 기록과 함께 다시 엶
+  // 닫고 다시 탭 → 질문 기록 자리는 탭을 가로채지 않음 (§5.4: 저장한 하이라이트만, 용어·각주 탭이 그대로)
   await page.evaluate(() => PaperApp.closeSheet());
   await sleep(450);
   await tapPainted(page, "hn-q", "Large language models");
+  await sleep(300);
+  assert.equal(await page.evaluate(() => PaperApp.isSheetOpen()), false);
+  // 그 줄의 Q 표시 → 그 대화를 기록과 함께 다시 엶
+  await page.evaluate(() => {
+    const r = [...CSS.highlights.get("hn-q")].find(x => x.toString().includes("Large language models"));
+    const y = r.getClientRects()[0].top + scrollY;
+    const qs = [...document.querySelectorAll(".hn-gutter .hn-badge-q")];
+    qs.sort((a, b) => Math.abs(parseFloat(a.style.top) - y) - Math.abs(parseFloat(b.style.top) - y))[0].click();
+  });
   await until(page, () => PaperApp.isSheetOpen() && PaperApp.session.continued);
   assert.deepEqual(await page.evaluate(() => [PaperApp.session.threadId, PaperApp.session.history.length]), [t2, 2]);
+  await page.evaluate(() => PaperApp.closeSheet());
+
+  // 같은 자리에서 두 번째 대화를 저장해도 같은 항목에 붙음 (탭 한 번으로 둘 다)
+  await sleep(450);
+  await askAbout(page, "S2.p3", "the sparse model improves accuracy", "두번째 대화");
+  const t3 = await page.evaluate(() => PaperApp.session.threadId);
+  await page.click("#answer .hn-save");
+  items = await stored(page);
+  assert.equal(items.length, 1);
+  assert.deepEqual([items[0].qa.length, items[0].thread, items[0].threads.length], [2, t3, 2]);
   await page.evaluate(() => PaperApp.closeSheet());
 
   // 패널: 섹션 제목 (문서 순서), 내보내기에도
@@ -332,6 +351,53 @@ test("패널: 문서 순서·색 필터, .md 내보내기, add() API (번역문�
   await until(page, () => document.querySelector(".hn-quick > button:last-child")?.textContent === "펜 끄기");
   await page.click(".hn-quick button:has-text('펜 끄기')");
   assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("pr:highlights-notes:prefs")).highlighter), false);
+  assert.deepEqual(page.errors, []);
+});
+
+test("같은 문구가 여러 번: 항목에서 연 질문은 그 항목 자리에, add()는 내 메모·색을 덮지 않음, 수식으로 시작하는 하이라이트도 탭", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  // 'router'가 처음 나오는 곳(S1.p1)이 아닌 S2.p1의 'router'를 칠하고 → 질문하기 → 노트에 저장
+  await highlight(page, "S2.p1", "router");
+  await page.mouse.click(5, 400);
+  await sleep(450);
+  await tapPainted(page, "hn-yellow", "router");
+  await until(page, () => document.querySelector(".hn-peek"));
+  await page.click(".pr-peek-actions button:has-text('질문하기')");
+  await until(page, () => PaperApp.isSheetOpen());
+  await page.evaluate(() => PaperApp.ask("뭐야?"));
+  await until(page, () => document.querySelector("#answer .hn-save"));
+  await page.click("#answer .hn-save");
+  const items = await stored(page), threads = await stored(page, TKEY);
+  assert.equal(items.length, 1, "새 항목을 다른 'router'에 만들지 않음");
+  assert.deepEqual([items[0].type, items[0].anchor.paraId, items[0].qa.length], ["qa", "S2.p1", 1]);
+  assert.equal(threads[0].anchor.paraId, "S2.p1");
+  await page.evaluate(() => PaperApp.closeSheet());
+
+  // 공개 add(): 같은 자리에 다시 오면 내 메모는 남기고 덧붙임, 색은 그대로
+  const r = await page.evaluate(() => {
+    const f = PaperApp.feature("highlights-notes");
+    const a = f.add({ range: __span("S1.p1", "Knowledge distillation"), note: "내 메모: 중요" });
+    const it = JSON.parse(localStorage.getItem("pr:highlights-notes:2401.00001")).find(x => x.id === a);
+    const b = f.add({ anchor: it.anchor, note: "공유받은 남의 메모", color: "pink" });
+    const after = JSON.parse(localStorage.getItem("pr:highlights-notes:2401.00001")).find(x => x.id === a);
+    return { same: a === b, note: after.note, color: after.color };
+  });
+  assert.deepEqual(r, { same: true, note: "내 메모: 중요\n\n---\n\n공유받은 남의 메모", color: "yellow" });
+
+  // 수식으로 시작하는 하이라이트: 그 수식을 탭해도 열림
+  await page.evaluate(() => {
+    const m = document.getElementById("S1.p1.m1"), end = __span("S1.p1", "of width");
+    const r = document.createRange();
+    r.setStartBefore(m);
+    r.setEnd(end.endContainer, end.endOffset);
+    PaperApp.feature("highlights-notes").add({ range: r });
+    m.scrollIntoView({ block: "center" });
+  });
+  await sleep(450);
+  const c = await page.evaluate(() => { const b = document.getElementById("S1.p1.m1").getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; });
+  await page.mouse.click(c.x, c.y);
+  await until(page, () => document.querySelector(".hn-peek .hn-quote") && document.querySelector(".hn-peek .hn-quote").textContent.includes("of width"));
   assert.deepEqual(page.errors, []);
 });
 
