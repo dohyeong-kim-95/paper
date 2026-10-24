@@ -29,6 +29,18 @@
     return lo < hits.length ? lo : 0;
   }
 
+  // 화면에서 y(찾기 줄 아래 끝)보다 아래에 보이는 첫 결과의 번호 (없으면 처음으로 돌아가 0).
+  // 결과는 문서 순서(= 위→아래)라 이진 탐색. yOf(i): i번 결과의 화면 y, 숨겨져 그려지지 않았으면 null →
+  // 그 뒤 처음 보이는 결과의 자리로 침 (맨 끝까지 숨겨져 있으면 화면 뒤)
+  function firstBelow(n, yOf, y) {
+    const memo = new Map();
+    const at = i => { if (!memo.has(i)) memo.set(i, yOf(i)); return memo.get(i); };
+    const pos = i => { for (let k = i; k < n; k++) { const v = at(k); if (v != null) return v; } return Infinity; };
+    let lo = 0, hi = n;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (pos(mid) > y) hi = mid; else lo = mid + 1; }
+    return lo < n ? lo : 0;
+  }
+
   // Enter를 눌렀을 때 AI로 찾을지: 한글 질문이거나, 글자 일치가 없는 3글자 이상
   const wantsAI = (query, count) => hasHangul(query) || (count === 0 && anchor().normalize(query).length >= 3);
 
@@ -51,7 +63,7 @@
   // '3/12', 결과 없음 '0/0', 상한을 넘으면 '3/1000+'
   const countLabel = (cur, total, capped = false) => (total ? `${cur + 1}/${total}${capped ? "+" : ""}` : "0/0");
 
-  const api = { findAll, nearestIndex, hasHangul, wantsAI, cleanResults, pushRecent, countLabel, MAX_HITS };
+  const api = { findAll, nearestIndex, firstBelow, hasHangul, wantsAI, cleanResults, pushRecent, countLabel, MAX_HITS };
   if (typeof module !== "undefined") module.exports = api;
   if (typeof document === "undefined") return;           // node: 여기서 끝
   if (document.body.dataset.page !== "paper") return;
@@ -135,28 +147,54 @@
   }
   const abort = () => { if (ctrl) { ctrl.abort(); ctrl = null; } };
 
-  // #top-stack은 흐름 안의 sticky라 찾기 줄을 넣고 빼면 아래 본문이 그 높이만큼 밀림. Chrome은 스크롤 앵커링이 잡아 주지만
-  // Safari는 없으므로 화면 가운데 요소가 움직인 만큼 되돌림 (맨 위에서는 그대로, 그사이 결과로 이동했으면 그대로)
+  // #top-stack은 흐름 안의 sticky라 찾기 줄을 넣고 빼면 아래 본문(#paper 전체)이 그 높이만큼 밀림. Chrome은 스크롤 앵커링이
+  // 잡아 주지만 Safari는 없으므로 #paper가 움직인 만큼 되돌림. 기준은 화면 좌표의 요소가 아니라 #paper 자체
+  // (AI 목록 덮개·질문 시트가 화면을 가려도 그대로). 맨 위에서는 그대로, 그사이 결과로 이동했으면 그대로
   let jumps = 0;
   function keepScroll(change) {
-    const ref = window.scrollY > 0 ? document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2) : null;
-    const y0 = ref && ref !== paperEl && paperEl.contains(ref) ? ref.getBoundingClientRect().top : null;
+    const y0 = window.scrollY > 0 ? paperEl.getBoundingClientRect().top : null;
     const j = jumps;
     change();
     if (y0 == null) return;
     requestAnimationFrame(() => {
-      const d = ref.getBoundingClientRect().top - y0;
-      if (jumps === j && ref.isConnected && Math.abs(d) > 1) window.scrollBy(0, d);
+      const d = paperEl.getBoundingClientRect().top - y0;
+      if (jumps === j && Math.abs(d) > 1) window.scrollBy(0, d);
     });
   }
 
   // ---------- 글자 검색 ----------
-  // 첫 결과: 직전 현재 결과(타이핑 중) 또는 지금 화면 맨 위 이후의 첫 일치
-  function viewOffset() {
-    const top = (document.getElementById("top-stack")?.getBoundingClientRect().bottom || 0) + 8;
-    const pr = paperEl.getBoundingClientRect();
-    const el = document.elementFromPoint(pr.left + pr.width / 2, Math.min(Math.max(top, 0), window.innerHeight - 1));
-    return el && el !== paperEl && paperEl.contains(el) ? A.pointToOffset(el, 0, false) ?? 0 : 0;
+  // 첫 결과: 직전 현재 결과(타이핑 중) 또는 지금 찾기 줄 바로 아래에 보이는 첫 일치 (그 위로 건너뛰지 않음).
+  // 요소의 시작이 아니라 결과 자체의 화면 위치로 고름: 문단 사이 빈 곳·긴 문단 중간·AI 목록 덮개 아래에서도 정확
+  function firstInView(l) {
+    if (!l.length) return -1;
+    const y = document.getElementById("top-stack")?.getBoundingClientRect().bottom || 0;
+    const idx = A.index();
+    return firstBelow(l.length, i => {
+      const r = A.rangeAt(l[i].start, l[i].end, idx);
+      if (!r) return null;
+      const rs = r.getClientRects(), b = rs[rs.length - 1];
+      if (b) return (b.top + b.bottom) / 2; // 마지막 줄의 가운데: 반 넘게 가려진 결과는 화면 위로 침
+      const s = standIn(r.startContainer);  // 그려지지 않은 결과: 대신 보이는 요소가 조금이라도 찾기 줄 아래면 화면 안
+      return s ? s.getBoundingClientRect().bottom : null;
+    }, y);
+  }
+  // 숨긴 결과(번역 모드에서 tr-hide인 원문 등)의 자리: 숨긴 가장 바깥 요소 바로 뒤에 보이는 형제 (그 번역 .tr-ko)
+  function standIn(node) {
+    let el = node.nodeType === 1 ? node : node.parentElement;
+    while (el && el.parentElement && el.parentElement !== paperEl && !el.parentElement.getClientRects().length) el = el.parentElement;
+    for (let s = el && el !== paperEl ? el.nextElementSibling : null; s; s = s.nextElementSibling) if (s.getClientRects().length) return s;
+    return null;
+  }
+
+  // 본문 normMap은 색인 글자가 같으면 다시 만들지 않음: <mark> 칠하기(Highlight API가 없을 때)·.pr-ui 끼워 넣기는
+  // 색인을 무효로 하지만 글자는 그대로라, 글자마다 긴 논문 전체를 다시 정규화하지 않게
+  let nmText = null, nmMemo = null;
+  function normIndex() {
+    const idx = A.index();
+    if (idx.nm) { nmText = idx.text; nmMemo = idx.nm; return idx; }
+    if (idx.text !== nmText) { nmText = idx.text; nmMemo = A.normMap(idx.text); }
+    idx.nm = nmMemo; // anchor.js와 같은 캐시 칸 (같은 값) → A.locate도 이걸 씀
+    return idx;
   }
 
   function runText(q, { keep = true } = {}) {
@@ -167,13 +205,12 @@
     listOpen = true;
     let all = [];
     if (A.normalize(q).length >= MIN_CHARS) {
-      const idx = A.index();
-      const nm = idx.nm || (idx.nm = A.normMap(idx.text)); // anchor.js와 같은 캐시 칸 (같은 값)
-      all = findAll(idx.text, q, { nm, limit: MAX_HITS + 1 });
+      const idx = normIndex();
+      all = findAll(idx.text, q, { nm: idx.nm, limit: MAX_HITS + 1 });
     }
     capped = all.length > MAX_HITS;
     hits = all.slice(0, MAX_HITS);
-    cur = hits.length ? nearestIndex(hits, prev ? prev.start : viewOffset()) : -1;
+    cur = !hits.length ? -1 : prev ? nearestIndex(hits, prev.start) : firstInView(hits);
     paintAll();
     if (cur >= 0) show(cur);
     render();
@@ -193,8 +230,19 @@
     if (!l.length) return;
     cur = ((i % l.length) + l.length) % l.length;
     A.paint("ps-current", [l[cur]], { priority: 50 });
+    if (mode === "text" && onScreen(l[cur])) return; // 이미 찾기 줄 아래·키보드 위에 보이면 화면을 움직이지 않음
     jumps++;
     PaperNav.jumpTo(l[cur], { back: false, flash: mode === "ai" });
+  }
+  // 결과 전체가 찾기 줄 아래와 보이는 아래끝(키보드 위) 사이에 그려져 있는지. 숨긴 결과(그려진 상자 없음)는 false → jumpTo가 드러냄
+  function onScreen(h) {
+    const r = A.rangeAt(h.start, h.end);
+    const rs = r ? r.getClientRects() : [];
+    if (!rs.length) return false;
+    const top = document.getElementById("top-stack")?.getBoundingClientRect().bottom || 0;
+    const vv = window.visualViewport;
+    const bottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+    return rs[0].top >= top && rs[rs.length - 1].bottom <= bottom;
   }
   function step(d) {
     const l = list();
@@ -208,7 +256,7 @@
     clearTimeout(timer);
     const q = input.value;
     if (A.normalize(q) !== lastQ) runText(q); // 디바운스 전에 Enter
-    if (mode === "text" && wantsAI(q, hits.length)) runAI();
+    if (mode === "text" ? wantsAI(q, hits.length) : aiFailed()) runAI(); // 오프라인·실패 뒤 Enter = 다시
     else step(back ? -1 : 1);
   }
 
@@ -238,6 +286,10 @@
   }
 
   // ---------- AI로 찾기 ----------
+  function aiFailed() { return mode === "ai" && (aiState === "offline" || aiState === "error"); }
+  // 오프라인으로 멈춘 AI 검색은 연결이 돌아오면 저절로 다시
+  window.addEventListener("online", () => { if (closeLayer && mode === "ai" && aiState === "offline") runAI(); });
+
   async function runAI() {
     const q = input.value.trim();
     if (!q) { input.focus(); return; }
@@ -272,6 +324,7 @@
       if (res.length) aiCache.set(q, res);
     }
     // 인용을 본문에서 다시 찾음: 못 찾은 것·같은 자리는 버림
+    normIndex();
     const seen = new Set();
     ai = [];
     for (const r of res) {
@@ -317,17 +370,17 @@
     lastQ = A.normalize(input.value);
     const l = list(), q = input.value.trim();
     count.textContent = mode !== "ai" ? countLabel(cur, hits.length, capped)
-      : aiState !== "done" ? "…" : cur >= 0 ? `${cur + 1}/${l.length}` : `${l.length}곳`;
+      : aiState === "loading" ? "…" : aiFailed() ? "!" : cur >= 0 ? `${cur + 1}/${l.length}` : `${l.length}곳`;
     prevBtn.disabled = nextBtn.disabled = !l.length;
     dimBtn.setAttribute("aria-pressed", String(declutter));
     aiBtn.disabled = !q;
-    aiBtn.hidden = mode === "ai" && aiState !== "error"; // AI 결과 중에는 상태 줄에 자리 양보
+    aiBtn.hidden = mode === "ai" && !aiFailed(); // AI 결과 중에는 상태 줄에 자리 양보 (실패·오프라인이면 남겨 둠)
     aiBtn.classList.toggle("ps-hot", mode === "text" && !!q && wantsAI(q, hits.length));
     recentEl.replaceChildren(...(q ? [] : pushRecent(store.get(RECENT, []), "").map(r =>
       h("button", { type: "button", class: "ps-chip ps-old", text: r, onclick: () => useRecent(r) }))));
     if (mode !== "ai") { info.hidden = results.hidden = true; return; }
     if (aiState === "loading") return setInfo("✨ AI가 위치를 찾는 중…");
-    if (aiState === "offline") return setInfo("오프라인: AI로 찾기는 네트워크가 필요합니다");
+    if (aiState === "offline") return setInfo("오프라인: AI로 찾기는 네트워크가 필요합니다", { label: "다시", onClick: () => runAI() });
     if (aiState === "error") return setInfo("AI 검색에 실패했습니다", { label: "다시", onClick: () => runAI() });
     if (!ai.length) return setInfo("관련 위치를 찾지 못했습니다");
     const toggle = { label: listOpen ? "접기" : "목록", list: listOpen, onClick: () => { listOpen = !listOpen; render(); } };

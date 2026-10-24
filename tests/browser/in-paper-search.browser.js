@@ -245,6 +245,181 @@ test("Ctrl+F → 찾기 줄을 열고 선택한 짧은 글자로 채움, Esc로 
   assert.equal(await page.evaluate(() => !!document.querySelector(".ps-bar")?.isConnected), false);
 });
 
+// 찾기 줄 아래에 (반 넘게) 보이는 첫 'experts' 결과의 번호 → '5/7' (결과 자체의 화면 위치 기준. 숨긴 결과는 대신 보이는 다음 형제)
+const firstVisibleLabel = page => page.evaluate(() => {
+  const idx = PaperAnchor.index(), hits = [];
+  for (const m of idx.text.matchAll(/experts/gi)) hits.push({ start: m.index, end: m.index + m[0].length });
+  const top = document.getElementById("top-stack").getBoundingClientRect().bottom;
+  const i = hits.findIndex(h => {
+    const r = PaperAnchor.rangeAt(h.start, h.end), rs = r.getClientRects(), b = rs[rs.length - 1];
+    if (b) return (b.top + b.bottom) / 2 > top;
+    let el = r.startContainer.parentElement;
+    while (!el.parentElement.getClientRects().length) el = el.parentElement;
+    return el.nextElementSibling.getBoundingClientRect().bottom > top;
+  });
+  return `${(i < 0 ? 0 : i) + 1}/${hits.length}`;
+});
+// y만큼 스크롤해 화면 위치(찾기 줄 아래 끝 기준)를 맞춤: fn은 페이지에서 '찾기 줄 아래 끝에 올 화면 y'를 돌려줌
+async function scrollBarTo(page, fn) {
+  await page.evaluate(fn => {
+    const y = new Function(`return (${fn})()`)();
+    scrollBy(0, y - document.getElementById("top-stack").getBoundingClientRect().bottom);
+  }, String(fn));
+  await sleep(100);
+}
+const LOCATE5 = () => [
+  { q: "The model matches a dense baseline while using far fewer FLOPs per token", why: "요약의 주장" },
+  { q: "Code and checkpoints are released to the community", why: "공개" },
+  { q: "We introduce a top-two routing rule with a load balancing loss", why: "기여 1" },
+  { q: "We minimize $\\mathcal{L}$ with AdamW and a learning rate of", why: "학습률 설정" },
+  { q: "The balancing coefficient $\\alpha$ is set to 0.01", why: "균형 계수 값" },
+];
+
+test("첫 결과 = 지금 찾기 줄 아래 보이는 첫 일치 (문단 사이 빈 곳·긴 문단 중간·AI 목록이 열린 채·숨긴 원문), 위로 돌아가지 않음", async browser => {
+  const typeExperts = async page => {
+    await page.fill(".ps-input", "experts");
+    await until(page, () => /^[1-9]\d*\/\d+$/.test(document.querySelector(".ps-count").textContent));
+    return count(page);
+  };
+  // (1) 1절과 2절 사이 빈 곳이 찾기 줄 바로 아래 (찾기 줄 아래 한 점이 요소 없는 article에 닿아 논문 처음으로 가던 자리)
+  let page = await newPage(browser);
+  await open(page);
+  await page.click(BTN);
+  await sleep(100);
+  await scrollBarTo(page, () => {
+    const a = document.getElementById("S1").getBoundingClientRect().bottom, b = document.getElementById("S2").getBoundingClientRect().top;
+    return (a + b) / 2 - 8;
+  });
+  assert.ok(await page.evaluate(() => {
+    const top = document.getElementById("top-stack").getBoundingClientRect().bottom;
+    return !document.elementFromPoint(innerWidth / 2, top + 8).closest(".ltx_para, .ltx_title, figure");
+  }), "찾기 줄 바로 아래가 문단 사이 빈 곳");
+  let want = await firstVisibleLabel(page);
+  assert.notEqual(want, "1/7");
+  assert.equal(await typeExperts(page), want, "문단 사이");
+  // (2) 긴 문단 S1.p1의 두 결과 사이 (문단 시작이 화면 위에 있음)
+  await page.fill(".ps-input", "");
+  await sleep(250);
+  await scrollBarTo(page, () => {
+    const idx = PaperAnchor.index(), ms = [...idx.text.matchAll(/experts/gi)].map(m => PaperAnchor.rangeAt(m.index, m.index + 7));
+    const inP = ms.filter(r => document.getElementById("S1.p1").contains(r.startContainer)).map(r => r.getBoundingClientRect());
+    return (inP[0].bottom + inP[1].top) / 2;
+  });
+  want = await firstVisibleLabel(page);
+  assert.ok(await page.evaluate(() => document.getElementById("S1.p1").getBoundingClientRect().top
+    < document.getElementById("top-stack").getBoundingClientRect().bottom), "문단 시작이 찾기 줄 위");
+  assert.equal(await typeExperts(page), want, "긴 문단 중간");
+  await page.close();
+
+  // (3) AI 결과 목록이 열린 채 (덮개가 화면 위쪽을 가림) 글자 검색으로
+  page = await newPage(browser, { locate: LOCATE5 });
+  await open(page);
+  await search(page, "학습률 얘기");
+  await page.press(".ps-input", "Enter");
+  await until(page, () => document.querySelectorAll(".ps-result").length === 5);
+  await scrollBarTo(page, () => document.getElementById("S2.p2").getBoundingClientRect().top);
+  assert.equal(await page.isVisible(".ps-results"), true);
+  want = await firstVisibleLabel(page);
+  assert.notEqual(want, "1/7");
+  assert.equal(await typeExperts(page), want, "AI 목록이 열린 채");
+  await page.close();
+
+  // (4) 번역 모드 흉내: 결과가 든 원문을 모두 숨기고 바로 뒤에 보이는 번역을 둠 → 화면의 번역에 해당하는 결과부터
+  page = await newPage(browser);
+  await open(page);
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll("#paper .ltx_abstract .ltx_p, #paper .ltx_para, #paper figcaption, #paper .ltx_listingline")) {
+      if (el.parentElement.closest(".ltx_para")) continue;
+      const ko = document.createElement("div");
+      ko.className = "tr-ko pr-ui";
+      ko.textContent = "번역된 문단입니다. ".repeat(12);
+      el.after(ko);
+      el.style.display = "none";
+    }
+  });
+  await page.click(BTN);
+  await sleep(100);
+  await scrollBarTo(page, () => document.getElementById("S2.p3").nextElementSibling.getBoundingClientRect().top + 10);
+  want = await firstVisibleLabel(page);
+  const inP3 = await page.evaluate(() => {
+    const idx = PaperAnchor.index(), ms = [...idx.text.matchAll(/experts/gi)];
+    return ms.findIndex(m => document.getElementById("S2.p3").contains(PaperAnchor.rangeAt(m.index, m.index + 7).startContainer)) + 1;
+  });
+  assert.equal(want, `${inP3}/7`);
+  assert.equal(await typeExperts(page), want, "숨긴 원문");
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test("AI 결과 목록이 화면 가운데를 덮은 채 ✕로 닫아도 읽던 본문이 밀리지 않음 (스크롤 앵커링 없음 포함)", async browser => {
+  for (const anchoring of [true, false]) {
+    const page = await newPage(browser, { locate: LOCATE5 });
+    await open(page);
+    if (!anchoring) await page.addStyleTag({ content: "* { overflow-anchor: none !important; }" });
+    await search(page, "학습률 얘기");
+    await page.press(".ps-input", "Enter");
+    await until(page, () => document.querySelectorAll(".ps-result").length === 5);
+    await page.evaluate(() => { document.getElementById("S2.p3").scrollIntoView({ block: "center" }); });
+    await sleep(150);
+    assert.ok(await page.evaluate(() => !!document.elementFromPoint(innerWidth / 2, innerHeight / 2).closest(".ps-results")),
+      "목록이 화면 가운데를 덮음");
+    const top = () => page.evaluate(() => Math.round(document.getElementById("S2.p3").getBoundingClientRect().top));
+    const y0 = await top();
+    await page.click('.ps-btn[aria-label="검색 닫기"]');
+    await sleep(150);
+    assert.ok(Math.abs(await top() - y0) <= 2, `닫기: anchoring=${anchoring} ${y0} → ${await top()}`);
+    await page.close();
+  }
+});
+
+test("오프라인 AI로 찾기: '!'·'다시'·AI 버튼이 남고, Enter·'다시'로 재시도, 연결이 돌아오면 저절로 다시", async browser => {
+  const page = await newPage(browser, { locate: LOCATE5 });
+  await open(page);
+  await search(page, "학습률 얘기 어디?");
+  const ctx = page.context();
+  await ctx.setOffline(true);
+  await page.press(".ps-input", "Enter");
+  await until(page, () => /오프라인/.test(document.querySelector(".ps-info").textContent));
+  const st = () => page.evaluate(() => ({ count: document.querySelector(".ps-count").textContent,
+    ai: !document.querySelector(".ps-ai").hidden, link: document.querySelector(".ps-link")?.textContent || "" }));
+  assert.deepEqual(await st(), { count: "!", ai: true, link: "다시" });
+  await page.press(".ps-input", "Enter");      // 아직 오프라인: 그대로, 부르지 않음
+  await page.click('.ps-link:text("다시")');
+  await sleep(100);
+  assert.deepEqual(await st(), { count: "!", ai: true, link: "다시" });
+  assert.equal(page.calls.length, 0);
+  await ctx.setOffline(false);                // 'online' → 저절로 다시
+  await until(page, () => document.querySelectorAll(".ps-result").length === 5);
+  assert.equal(page.calls.length, 1);
+  assert.equal(await count(page), "5곳");
+  assert.equal(await page.isVisible(".ps-ai"), false);
+  await page.press(".ps-input", "Enter");      // 이제 Enter는 결과 사이 이동
+  assert.equal(await count(page), "1/5");
+  assert.deepEqual(page.errors, []);
+});
+
+test("Highlight API가 없어도(<mark> 칠하기) 글자마다 본문 normMap을 다시 만들지 않음", async browser => {
+  const page = await newPage(browser);
+  await page.addInitScript(() => { delete window.Highlight; });
+  await open(page);
+  assert.equal(await page.evaluate(() => typeof Highlight), "undefined");
+  await page.evaluate(() => {
+    const orig = PaperAnchor.normMap, len = PaperAnchor.index().text.length;
+    window.__builds = 0;
+    PaperAnchor.normMap = t => { if (t.length === len) window.__builds++; return orig(t); };
+  });
+  await page.click(BTN);
+  for (const q of ["ex", "exp", "expe", "exper", "expert", "experts"]) { await page.fill(".ps-input", q); await sleep(220); }
+  await page.click('.ps-btn[aria-label="다음 결과"]');
+  await page.click('.ps-btn[aria-label="다음 결과"]');
+  await page.fill(".ps-input", "router");
+  await sleep(220);
+  assert.match(await count(page), /^1\/\d+$/);
+  assert.equal(await page.evaluate(() => document.querySelectorAll("mark.pa-mark-ps-current").length > 0), true);
+  assert.ok(await page.evaluate(() => window.__builds) <= 1, `normMap ${await page.evaluate(() => window.__builds)}번`);
+  assert.deepEqual(page.errors, []);
+});
+
 (async () => {
   let browser;
   try { browser = await chromium.launch(); } catch (e) { console.log("SKIP Chromium 실행 불가:", String(e).split("\n")[0]); process.exit(0); }

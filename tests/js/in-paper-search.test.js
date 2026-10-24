@@ -1,6 +1,6 @@
 "use strict";
 const { test, assert, load } = require("./_runner");
-const { findAll, nearestIndex, hasHangul, wantsAI, cleanResults, pushRecent, countLabel, MAX_HITS } = load("static/features/in-paper-search.js");
+const { findAll, nearestIndex, firstBelow, hasHangul, wantsAI, cleanResults, pushRecent, countLabel, MAX_HITS } = load("static/features/in-paper-search.js");
 
 const slices = (text, hits) => hits.map(h => text.slice(h.start, h.end));
 
@@ -46,6 +46,22 @@ test("nearestIndex: offset 이후 첫 결과, 없으면 처음으로", () => {
   assert.equal(nearestIndex(hits, 21), 2);
   assert.equal(nearestIndex(hits, 99), 0);
   assert.equal(nearestIndex([], 3), 0);
+});
+
+test("firstBelow: 화면 y보다 아래 첫 결과 (이진 탐색), 숨긴 결과는 그 뒤 보이는 결과 자리, 없으면 처음으로", () => {
+  const ys = [-300, -10, 140, 151, 900];
+  const calls = [];
+  const yOf = i => { calls.push(i); return ys[i]; };
+  assert.equal(firstBelow(ys.length, yOf, 148), 3);
+  assert.ok(calls.length <= 4, `이진 탐색: ${calls.length}번`);
+  assert.equal(firstBelow(ys.length, i => ys[i], -1000), 0);
+  assert.equal(firstBelow(ys.length, i => ys[i], 2000), 0);   // 모두 위 → 처음으로
+  assert.equal(firstBelow(0, () => 0, 0), 0);
+  // 숨긴 결과(null)는 그 뒤 처음 보이는 결과의 자리: 화면 바로 아래 보이는 결과 앞의 숨긴 결과가 먼저
+  const hid = [-50, null, null, 300, null];
+  assert.equal(firstBelow(hid.length, i => hid[i], 100), 1);
+  assert.equal(firstBelow(hid.length, i => hid[i], 400), 4);  // 맨 끝 숨김 = 화면 뒤
+  assert.equal(firstBelow(3, () => null, 100), 0);
 });
 
 test("hasHangul / wantsAI: 한글 질문이나 일치 없는 3글자 이상이면 AI", () => {
