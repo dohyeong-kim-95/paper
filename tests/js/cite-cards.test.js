@@ -82,6 +82,25 @@ test("toBibtex: arXiv 프리프린트 / 학회 / 원문만", () => {
   assert.equal(misc, "@misc{writer2022,\n  note = {C. Writer. Attention revisited 100\\%. 2022.}\n}");
 });
 
+test("texEsc: 수식·\\명령·짝 맞는 괄호는 살리고 LaTeX 특수문자는 이스케이프", () => {
+  assert.equal(cc.texEsc("Fast $O(n_{1})$ attention_with \\emph{stuff} & more"), "Fast $O(n_{1})$ attention\\_with \\emph{stuff} \\& more");
+  assert.equal(cc.texEsc("$\\mathcal{O}(n)$ {BERT} 50% #1 a^b ~x"), "$\\mathcal{O}(n)$ {BERT} 50\\% \\#1 a\\^{}b \\~{}x");
+  assert.equal(cc.texEsc("costs \\$5 and \\$10, already \\& ok"), "costs \\$5 and \\$10, already \\& ok");
+  assert.equal(cc.texEsc("odd } brace { here"), "odd brace here");
+  assert.equal(cc.texEsc("lone $ sign and C:\\"), "lone \\$ sign and C:\\textbackslash{}");
+  assert.equal(cc.texEsc("$x % y$"), "$x \\% y$");
+  // 참고문헌 원문(화면 글자): 괄호는 빼고 백슬래시도 글자로
+  assert.equal(cc.texEsc("\\cite x_y {raw} $a_{1}$ 100%", true), "\\textbackslash{}cite x\\_y raw $a_{1}$ 100\\%");
+  assert.equal(cc.texEsc(null), "");
+});
+
+test("toBibtex: LaTeX가 섞인 제목·특수문자 이름", () => {
+  const b = cc.toBibtex({ ...ARXIV_CARD, enriched: { ...ARXIV_CARD.enriched, title: "Fast $O(n_{1})$ attention with \\emph{stuff}", authors: ["Jean_Luc O~Neil", "Bob"] } });
+  assert.match(b, /title = \{Fast \$O\(n_\{1\}\)\$ attention with \\emph\{stuff\}\}/);
+  assert.match(b, /author = \{Jean\\_Luc O\\~\{\}Neil and Bob\}/); // 둘째 저자도 같은 규칙 (map 인덱스가 raw로 새지 않음)
+  assert.match(cc.toBibtex({ bib_text: "A. B. \\cite x_y. 2020.", enriched: null }), /note = \{A\. B\. \\textbackslash\{\}cite x\\_y\. 2020\.\}/);
+});
+
 test("바구니: id 규칙, 같은 id는 교체, 내보내기에서 키 중복 해결, 제목 꺼내기", () => {
   assert.equal(cc.basketId(ARXIV_CARD, "2401.00001"), "arxiv:2301.00001");
   assert.equal(cc.basketId({ bib_id: "bib.bib3", doi: "10.1000/JML", enriched: null }, "2401.00001"), "doi:10.1000/jml");

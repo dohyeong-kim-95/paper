@@ -1,6 +1,8 @@
 """cite-cards: 인용 카드 보강 (arXiv 일괄·제목 검색, Semantic Scholar, Crossref) + GitHub 미리보기. Claude 호출 없음"""
 import asyncio
 import json
+import time
+from unittest import mock
 
 import httpx
 
@@ -31,6 +33,13 @@ def atom(title: str, aid: str = "2205.01234") -> str:
 
 def js(obj):
     return json.dumps(obj)
+
+
+EMPTY_FEED = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>ArXiv Query</title><id>http://arxiv.org/api/x</id></feed>"""
+ERROR_FEED = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>http://arxiv.org/api/errors#incorrect_id_format_for_2313.00001</id>
+<title>Error</title><summary>incorrect id format for 2313.00001</summary></entry></feed>"""
 
 
 class Base(CoreTestCase):
@@ -172,11 +181,109 @@ class CiteCardTests(Base):
         self.get("bib.bib4")  # arXiv는 캐시, S2는 쉬는 중 → 외부 호출 0
         self.assertEqual(len(self.http.calls), n)
 
+    def expire_misses(self, src="arxiv"):
+        """캐시된 '없음'의 확인 시각을 MISS_TTL보다 오래 전으로"""
+        def old(c):
+            for k, v in c.items():
+                if isinstance(v, dict) and src in v.get("_miss", {}):
+                    v["_miss"][src] -= cc.MISS_TTL + 1
+            return c
+        core.update_json(core.task_path(self.paper_id, "cite-cards"), old, {})
+
+    def test_empty_arxiv_batch_is_not_cached_as_not_found(self):
+        for feed in (EMPTY_FEED, ERROR_FEED):  # 일시적인 빈 페이지 / 오류 항목뿐인 피드
+            with self.subTest(feed=feed[-40:]):
+                self.http.routes.clear()
+                core.task_path(self.paper_id, "cite-cards").unlink(missing_ok=True)
+                self.http.arxiv(feed).route("semanticscholar.org", None, status=404)
+                r = self.get("bib.bib1")
+                d = r.json()
+                self.assertIsNone(d["enriched"])
+                self.assertTrue(d["partial"], "arXiv 결과를 모름 → 부분 응답")
+                self.assertIsNone(r.headers.get("x-offline-cacheable"))
+                cache = self.stored() or {}
+                self.assertFalse(any("arxiv" in v for k, v in cache.items() if k.startswith("bib.")), cache)
+                # arXiv 회복 → 다음 탭(bib4)에서 다시 묻고 보강
+                self.http.routes.clear()
+                self.http.arxiv().route("semanticscholar.org", None, status=404)
+                n = sum("export.arxiv.org" in u for u in self.http.calls)
+                d4 = self.get("bib.bib4").json()
+                self.assertEqual(sum("export.arxiv.org" in u for u in self.http.calls), n + 1)
+                self.assertEqual(d4["enriched"]["arxiv_id"], "2302.00002")
+                self.assertFalse(d4["partial"])
+
+    def test_id_missing_from_nonempty_batch_is_a_miss_with_ttl(self):
+        # 응답에 bib1(2301.00001)만 있고 bib4(2302.00002)는 없음 → bib4만 '없음' (시각과 함께)
+        self.http.arxiv(atom("Sparse Mixtures of Experts for Everyone", "2301.00001")).route("semanticscholar.org", None, status=404)
+        self.assertEqual(self.get("bib.bib1").json()["enriched"]["arxiv_id"], "2301.00001")
+        cache = self.stored()
+        self.assertIsNone(cache["bib.bib4"]["arxiv"])
+        self.assertLessEqual(abs(cache["bib.bib4"]["_miss"]["arxiv"] - time.time()), 5)
+        self.assertEqual(cache["bib.bib1"]["_miss"], {"s2": mock.ANY}, "bib1은 arXiv에서 찾음 (S2 404만 '없음')")
+        n = len(self.http.calls)
+        d4 = self.get("bib.bib4").json()  # bib4 자신의 S2 조회(404)만
+        self.assertFalse(any("export.arxiv.org" in u for u in self.http.calls[n:]), "TTL 안의 '없음'은 다시 묻지 않음")
+        self.assertIsNone(d4["enriched"])
+        self.assertFalse(d4["partial"])
+        n = len(self.http.calls)
+        # TTL이 지나면 bib4만 다시 조회 (이미 찾은 bib1은 일괄 조회에 넣지 않음)
+        self.expire_misses()
+        self.http.routes.clear()
+        self.http.arxiv()
+        d4 = self.get("bib.bib4").json()
+        q = [u for u in self.http.calls[n:] if "export.arxiv.org" in u]
+        self.assertEqual(len(q), 1)
+        self.assertEqual(httpx.URL(q[0]).params.get("id_list"), "2302.00002")
+        self.assertEqual(d4["enriched"]["arxiv_id"], "2302.00002")
+        self.assertNotIn("arxiv", self.stored()["bib.bib4"].get("_miss", {}))
+
+    def test_legacy_cached_none_without_timestamp_is_refetched(self):
+        core.write_json(core.task_path(self.paper_id, "cite-cards"),
+                        {"_batch": 1, "bib.bib1": {"arxiv": None, "s2": None}, "bib.bib4": {"arxiv": None}})
+        self.http.arxiv().route("semanticscholar.org", None, status=404)
+        d = self.get("bib.bib1").json()
+        self.assertEqual(d["enriched"]["arxiv_id"], "2301.00001")
+        self.assertEqual(sum("semanticscholar" in u for u in self.http.calls), 1)
+
+    def test_title_search_miss_expires(self):
+        self.http.arxiv(EMPTY_FEED).route("search/match", None, status=404)
+        self.assertIsNone(self.get("bib.bib2").json()["enriched"])
+        self.expire_misses()
+        self.http.routes.clear()
+        self.http.arxiv(atom("Attention Mechanisms: Revisited")).route("search/match", None, status=404)
+        self.assertEqual(self.get("bib.bib2").json()["enriched"]["arxiv_id"], "2205.01234")
+
+    def test_malformed_ids_stay_out_of_the_batch(self):
+        idx = asyncio.run(core.paper_index(self.paper_id))
+        idx = {**idx, "bib": {**idx["bib"], "bib.bad": {**idx["bib"]["bib.bib4"], "id": "bib.bad", "arxiv_id": "2313.00001"}}}
+        self.http.arxiv()
+        asyncio.run(cc.arxiv_batch(self.paper_id, idx, "2301.00001"))
+        q = next(u for u in self.http.calls if "export.arxiv.org" in u)
+        self.assertNotIn("2313.00001", q)
+        n = len(self.http.calls)
+        self.assertIsNone(asyncio.run(cc.arxiv_batch(self.paper_id, idx, "2313.00001")))
+        self.assertEqual(len(self.http.calls), n, "형식이 틀린 id는 arXiv에 묻지 않음")
+
     def test_short_title_guess_skips_search(self):
         idx = {"bib": {"b": {"id": "b", "title_guess": "Notes.", "arxiv_id": None, "doi": None}}}
         self.assertEqual(cc.title_query(idx["bib"]["b"]), "")
         self.assertEqual(asyncio.run(cc.arxiv_title(idx["bib"]["b"])), None)
         self.assertEqual(self.http.calls, [])
+
+
+class ArxivQueueTests(AsyncCoreTestCase):
+    async def test_deep_queue_fails_fast_without_reserving_a_slot(self):
+        with mock.patch.object(core, "ARXIV_INTERVAL", 3.0):
+            core._arxiv_next = time.monotonic() + 20  # 다른 기능들로 대기열이 이미 20초
+            before = core._arxiv_next
+            with self.assertRaises(cc.SourceDown):
+                await cc.arxiv_call(id_list=["2301.00001"])
+            self.assertEqual(core._arxiv_next, before, "취소될 요청으로 자리를 예약하지 않음")
+            self.assertEqual(self.http.calls, [])
+            # 대기열이 얕으면 그대로 조회
+            self.http.arxiv()
+            core._arxiv_next = time.monotonic() + 0.01
+            self.assertEqual(len(await cc.arxiv_call(id_list=["2301.00001"])), 3)
 
 
 class CiteCardConcurrencyTests(AsyncCoreTestCase):
@@ -217,6 +324,21 @@ class GithubTests(Base):
             self.assertEqual(self.client.get("/api/cite-cards/github", params={"repo": bad}).status_code, 400, bad)
         self.assertEqual(self.http.calls, [])
 
+    def test_missing_repo_404_is_cached(self):
+        self.http.route("repos/nobody/none", "{}", status=404)
+        for _ in range(3):
+            r = self.client.get("/api/cite-cards/github", params={"repo": "nobody/none"})
+            self.assertEqual(r.status_code, 404)
+            self.assertIsNone(r.headers.get("x-offline-cacheable"))
+        self.assertEqual(len(self.http.calls), 1, "없음도 캐시 (비인증 GitHub API는 시간당 60회)")
+        # 수명이 지나면 다시 확인 (그새 공개된 저장소)
+        path = core.task_path("github", "cite-cards.nobody.none")
+        core.write_json(path, {**core.read_json(path), "ts": int(time.time()) - cc.GH_TTL - 1})
+        self.http.routes.clear()
+        self.http.route("repos/nobody/none", js({**self.REPO, "full_name": "nobody/none"}))
+        self.assertEqual(self.client.get("/api/cite-cards/github", params={"repo": "nobody/none"}).json()["full_name"], "nobody/none")
+        self.assertEqual(len(self.http.calls), 2)
+
     def test_missing_repo_404_and_rate_limit_503_then_stale(self):
         self.http.route("repos/nobody/none", "{}", status=404)
         self.assertEqual(self.client.get("/api/cite-cards/github", params={"repo": "nobody/none"}).status_code, 404)
@@ -248,6 +370,28 @@ class PureTests(Base):
     def test_slim_s2_drops_arxiv_venue(self):
         self.assertIsNone(cc.slim_s2({**S2_BIB1, "venue": "arXiv.org"})["venue"])
         self.assertEqual(cc.slim_s2({"title": "x"})["authors"], [])
+
+    def test_valid_arxiv_id(self):
+        for ok in ("2301.00001", "0704.0001", "1412.9999", "1501.00001", "9912.12345"):
+            self.assertTrue(cc.valid_arxiv_id(ok), ok)
+        for bad in ("2313.00001", "2300.00001", "1501.0001", "1412.00001", "0703.0001", "2301.000011", "", None, "hep-th/9901001"):
+            self.assertFalse(cc.valid_arxiv_id(bad), bad)
+
+    def test_known_and_put(self):
+        now = time.time()
+        e = cc.put({}, {"arxiv": None, "s2": {"title": "x"}}, now)
+        self.assertEqual(e["_miss"], {"arxiv": int(now)})
+        self.assertTrue(cc.known(e, "arxiv", now) and cc.known(e, "s2", now))
+        self.assertFalse(cc.known(e, "arxiv", now + cc.MISS_TTL + 1))
+        self.assertTrue(cc.known(e, "s2", now + cc.MISS_TTL + 1), "찾은 메타는 만료 없음")
+        self.assertFalse(cc.known(e, "crossref", now))
+        self.assertFalse(cc.known({"arxiv": None}, "arxiv", now), "시각 없는 옛 '없음'은 만료")
+        self.assertFalse(cc.known({"arxiv": None, "_miss": {"arxiv": "bad"}}, "arxiv", now))
+        e2 = cc.put(e, {"arxiv": {"title": "y"}, "s2": None}, now)
+        self.assertEqual(e2["arxiv"], {"title": "y"})
+        self.assertEqual(e2["s2"], {"title": "x"}, "찾은 메타를 '없음'으로 덮지 않음")
+        self.assertNotIn("_miss", e2)
+        self.assertEqual(e["_miss"], {"arxiv": int(now)}, "원본은 그대로")
 
     def test_sources(self):
         self.assertEqual(cc.sources({"arxiv_id": "1", "doi": "d"}), ["arxiv", "s2"])

@@ -89,7 +89,29 @@
     const key = (ascii(who).toLowerCase().replace(/[^a-z]/g, "") + year + word).slice(0, 40);
     return key || "ref";
   }
-  const texEsc = s => String(s == null ? "" : s).replace(/[{}]/g, "").replace(/([&%#])/g, "\\$1").replace(/\s+/g, " ").trim();
+  // BibTeX 값 이스케이프. $…$ 수식은 그대로 두고(그 안의 % & #만), 밖에서는 & % # _ ^ ~ $ 를 이스케이프.
+  // 서지(raw=false, arXiv 제목 등은 LaTeX가 섞임): \명령·이미 이스케이프된 문자·짝 맞는 중괄호는 살리고, 홀로 선 \ 와 짝 없는 괄호만 처리.
+  // 참고문헌 원문(raw=true, 화면 글자): 중괄호는 빼고 \ 는 \textbackslash{}
+  const TEX_CH = { "&": "\\&", "%": "\\%", "#": "\\#", _: "\\_", "^": "\\^{}", "~": "\\~{}", $: "\\$" };
+  function texText(t, raw) {
+    if (raw) return t.replace(/[{}]/g, "").replace(/\\|[&%#_^~$]/g, c => (c === "\\" ? "\\textbackslash{}" : TEX_CH[c]));
+    return t.replace(/\\(?:[A-Za-z]+|[&%$#_{}~^\\ ])|\\|[&%#_^~$]/g, m => (m.length > 1 ? m : m === "\\" ? "\\textbackslash{}" : TEX_CH[m]));
+  }
+  function texBalance(s) { // 짝 없는 { } 는 뺌 (\{ \} 는 글자이므로 셈에서 제외)
+    const drop = new Set(), open = [];
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === "\\") i++;
+      else if (s[i] === "{") open.push(i);
+      else if (s[i] === "}") { if (open.length) open.pop(); else drop.add(i); }
+    }
+    open.forEach(i => drop.add(i));
+    return drop.size ? s.split("").filter((_, i) => !drop.has(i)).join("") : s;
+  }
+  function texEsc(v, raw = false) {
+    const s = String(v == null ? "" : v).replace(/\s+/g, " ").trim().replace(/\\\$/g, "\u0000"); // \$ 는 수식 구분자가 아님
+    const out = s.split(/(\$[^$]+\$)/).map((p, i) => (i % 2 ? p.replace(/\\.|[%&#]/g, m => (m.length > 1 ? m : "\\" + m)) : texText(p, raw)));
+    return texBalance(out.join("").replace(/\u0000/g, "\\$")).replace(/\s+/g, " ").trim();
+  }
   const CONF = /conference|proceedings|workshop|symposium|\b(neurips|nips|icml|iclr|acl|emnlp|naacl|eacl|coling|cvpr|iccv|eccv|aaai|ijcai|sigir|kdd|interspeech|icassp|uai|aistats|colt|wacv|corl|rss)\b/i;
   function toBibtex(card) {
     const e = card && card.enriched;
@@ -97,11 +119,11 @@
     const f = [];
     const add = (k, v) => { if (v != null && String(v).trim()) f.push(`  ${k} = {${String(v).trim()}}`); };
     if (!e) {
-      add("note", texEsc(card && card.bib_text));
+      add("note", texEsc(card && card.bib_text, true));
       return `@misc{${key},\n${f.join(",\n")}\n}`;
     }
     const conf = !!e.venue && CONF.test(e.venue);
-    const authors = (e.authors || []).map(texEsc).filter(Boolean);
+    const authors = (e.authors || []).map(a => texEsc(a)).filter(Boolean);
     add("title", texEsc(e.title));
     if (authors.length) add("author", authors.join(" and ") + (e.n_authors > authors.length ? " and others" : ""));
     add("year", e.year);
@@ -173,7 +195,7 @@
 
   const api = {
     WHY_Q, clip, sentenceStarts, citingSentence, ghRepo, ago, fmtNum, authorLine, metaLine, firstSurname, bibKey,
-    toBibtex, basketId, basketEntry, basketAdd, bibExport, bibTitle, whyContext, citedContext,
+    texEsc, toBibtex, basketId, basketEntry, basketAdd, bibExport, bibTitle, whyContext, citedContext,
   };
   if (typeof module !== "undefined") module.exports = api;
   if (typeof document === "undefined") return;
@@ -353,6 +375,7 @@
       btn.disabled = true;
       btn.textContent = "…";
       await Promise.race([pending.get(ctx.bibId).catch(() => null), sleep(1500)]);
+      if (!ctx.view.isConnected) return; // 기다리는 사이 카드를 닫음(✕·뒤로·바깥 탭) → 묻지 않음
     }
     const card = cardOf(ctx.bibId);
     const s = ctx.sentence || card.bib_text;
@@ -432,7 +455,8 @@
     if (!repos.has(full)) {
       const url = `/api/cite-cards/github?repo=${encodeURIComponent(full)}`;
       const p = fetch(url).then(r => (r.ok ? r.json() : Promise.reject(Object.assign(new Error(`HTTP ${r.status}`), { status: r.status }))));
-      p.then(() => PaperApp.addOfflineUrl(url), () => repos.delete(full)); // 실패는 다음 탭에서 다시
+      // 404(없음)는 서버도 캐시하므로 이번 세션 동안 그대로, 그 밖의 실패(503·오프라인)만 다음 탭에서 다시
+      p.then(() => PaperApp.addOfflineUrl(url), e => { if (e.status !== 404) repos.delete(full); });
       repos.set(full, p);
     }
     return repos.get(full);
@@ -493,9 +517,10 @@
     const block = citedContext(ids.map(id => ({ id, card: cardOf(id) })));
     if (block) s.context = s.context ? `${s.context}\n\n${block}` : block;
   });
-  // 인용이 든 선택을 하면 (3개까지) 미리 보강 → 곧 하는 질문에 제목·초록이 들어감
+  // 인용이 든 선택을 하면 (3개까지) 미리 보강 → 곧 하는 질문에 제목·초록이 들어감.
+  // idle은 시작 시점만 정함: 응답(arXiv 대기로 최대 12초)을 기다리며 공유 idle 큐를 붙잡지 않게 promise를 돌려주지 않음
   PaperApp.on("selection", sel => {
     const ids = sel && sel.anchored ? citesIn(sel.range).filter(id => !cards.has(id)).slice(0, 3) : [];
-    for (const id of ids) PaperApp.idle(() => load(id).catch(() => null));
+    if (ids.length) PaperApp.idle(() => { for (const id of ids) load(id).catch(() => null); });
   });
 })();
