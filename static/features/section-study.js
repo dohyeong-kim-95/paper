@@ -3,11 +3,26 @@
   "use strict";
 
   // ---------- 순수 함수 (node 테스트 대상) ----------
-  // 요약 대상 섹션 (서버 GIST_LEVELS와 같게). 퀴즈 칩은 최상위 섹션만
-  const GIST_CLASSES = ["ltx_section", "ltx_subsection", "ltx_appendix"];
-  const QUIZ_CLASSES = ["ltx_section", "ltx_appendix"];
+  // 섹션 단계: 서버 build_index와 같은 순서로 첫 ltx_<level> 클래스
+  const LEVELS = ["section", "subsection", "subsubsection", "appendix", "paragraph"];
+  const GIST_LEVELS = ["section", "subsection", "appendix"]; // 서버 GIST_LEVELS와 같게
+  const TOP_LEVELS = ["section", "appendix"]; // 퀴즈 칩은 최상위 섹션만
+  const MAX_GISTS = 30; // 서버 MAX_SECTIONS와 같게
+  const TOP_SELECTOR = "section.ltx_section[id], section.ltx_appendix[id]";
   const NUMS = "①②③④";
-  const hasClass = (el, list) => !!(el && el.classList) && list.some(c => el.classList.contains(c));
+  const levelOf = el => (el && el.classList ? LEVELS.find(lv => el.classList.contains(`ltx_${lv}`)) || null : null);
+
+  // 요약을 받을 섹션 (서버 gist_sections와 같은 규칙): list = 문서 순서 [{id, level}] → id Set.
+  // 최상위를 먼저 모두, 남는 자리는 하위 섹션으로 → 요약이 올 리 없는 섹션엔 '요약' 칩을 안 만듦
+  function pickGistIds(list, max = MAX_GISTS) {
+    const cand = (list || []).filter(x => GIST_LEVELS.includes(x.level));
+    const keep = new Set(cand.filter(x => TOP_LEVELS.includes(x.level)).slice(0, max).map(x => x.id));
+    for (const x of cand) {
+      if (keep.size >= max) break;
+      if (!TOP_LEVELS.includes(x.level)) keep.add(x.id);
+    }
+    return keep;
+  }
 
   // .ss-head 자리: 섹션 .ltx_title 바로 뒤, section-translate의 .tr-ko 제목이 있으면 그 뒤 (제목 안은 금지: 번역 모드에 tr-hide)
   function headRef(title) {
@@ -17,6 +32,7 @@
   }
 
   const explainQuestion = title => `${String(title || "이").trim()} 섹션을 쉽게 풀어줘`;
+  const QUIZ_FALLBACK_Q = "이 섹션을 이해했는지 확인하는 4지선다 문제 3개를 내줘. 정답과 짧은 해설은 문제를 모두 낸 뒤 맨 끝에 따로 적어줘";
 
   // 퀴즈 진행 상태 (peek를 닫았다 열어도 이어서): {items, i, picks}
   const newQuiz = items => ({ items: (items || []).slice(), i: 0, picks: [] });
@@ -40,7 +56,7 @@
     return `${total}문제 중 ${n}개 정답`;
   }
 
-  const api = { GIST_CLASSES, QUIZ_CLASSES, hasClass, headRef, explainQuestion, newQuiz, pick, advance, score, scoreMessage };
+  const api = { GIST_LEVELS, TOP_LEVELS, MAX_GISTS, levelOf, pickGistIds, headRef, explainQuestion, newQuiz, pick, advance, score, scoreMessage };
   if (typeof module !== "undefined") module.exports = api;
   if (typeof document === "undefined") return;
   if (document.body.dataset.page !== "paper") return;
@@ -58,28 +74,41 @@
   const btn = (text, onclick, cls = "ss-btn") => h("button", { type: "button", class: cls, text, onclick });
   const titleElOf = sec => [...sec.children].find(c => c.classList.contains("ltx_title")) || null;
   const titleOf = s => (s.titleEl ? A.textOf(s.titleEl) : "") || s.id;
+  // 퀴즈를 낼 수 있는 최상위 섹션 (참고문헌 등은 아님)
+  const topSectionOf = el => (el && el.closest ? el.closest(TOP_SELECTOR) : null);
 
   // ---------- 섹션마다 칩 줄 + 요약 상자 (.ss-head, pr-ui) ----------
-  // 처음에 바로 넣음 (번들은 스크롤 복원 전에 돎 → 나중에 넣어 읽던 자리가 밀리지 않게)
-  const secs = new Map(); // id -> {id, el, titleEl, head, gistChip, box}
-  for (const el of paper.querySelectorAll("section[id]")) {
-    const titleEl = hasClass(el, GIST_CLASSES) && titleElOf(el);
-    if (!titleEl) continue;
-    const s = { id: el.id, el, titleEl };
-    const boxId = `ss-box-${secs.size}`;
-    s.box = h("div", { class: "ss-box", id: boxId, hidden: true });
-    s.gistChip = h("button", {
-      type: "button", class: "ss-chip", text: "요약", "aria-expanded": "false", "aria-controls": boxId,
-      onclick: () => toggleGist(s),
-    });
-    const chips = h("div", { class: "ss-chips" }, s.gistChip);
-    if (hasClass(el, QUIZ_CLASSES)) {
+  // 처음에 바로 넣고 나중에 숨기지 않음 (번들은 스크롤 복원 전에 돎 → 줄이 생기거나 접혀 읽던 자리가 밀리지 않게.
+  // iOS Safari는 스크롤 앵커링이 없음). 그래서 요약이 올 섹션(서버와 같은 규칙)과 퀴즈 칩이 있는 섹션에만 넣음
+  const found = [...paper.querySelectorAll("section[id]")]
+    .map(el => ({ el, id: el.id, level: levelOf(el), titleEl: titleElOf(el) }))
+    .filter(x => x.level && x.titleEl);
+  const gistIds = pickGistIds(found);
+  const secs = new Map(); // id -> {id, el, titleEl, head, gistChip?, box?}
+  for (const { el, id, level, titleEl } of found) {
+    const withGist = gistIds.has(id), withQuiz = TOP_LEVELS.includes(level);
+    if (!withGist && !withQuiz) continue;
+    const s = { id, el, titleEl };
+    const chips = h("div", { class: "ss-chips" });
+    const parts = [chips];
+    if (withGist) {
+      const boxId = `ss-box-${secs.size}`;
+      s.box = h("div", { class: "ss-box", id: boxId, hidden: true });
+      s.gistChip = h("button", {
+        type: "button", class: "ss-chip", text: "요약", "aria-expanded": "false", "aria-controls": boxId,
+        onclick: () => toggleGist(s),
+      });
+      chips.append(s.gistChip);
+      parts.push(s.box);
+    }
+    if (withQuiz) {
       chips.append(h("button", { type: "button", class: "ss-chip", text: "퀴즈", "aria-haspopup": "dialog", onclick: () => openQuiz(s) }));
     }
-    s.head = h("div", { class: "ss-head" }, chips, s.box);
+    s.head = h("div", { class: "ss-head" }, ...parts);
     A.insertUI(headRef(titleEl), s.head, "afterend");
-    secs.set(s.id, s);
+    secs.set(id, s);
   }
+  const gistSecs = [...secs.values()].filter(s => s.gistChip);
 
   // ---------- 요약: idle에 미리 받아 두고, 칩을 누르면 바로 ----------
   let gists = null, gistFail = false, gistLoading = null;
@@ -107,15 +136,12 @@
     return gistLoading;
   }
 
-  // 요약이 없는 섹션은 칩을 숨김 (열린 상자는 그대로 두고 안내), 칩이 하나도 없으면 줄째 숨김
-  function syncChip(s) {
-    s.gistChip.hidden = !!gists && !gists[s.id] && s.box.hidden;
-    s.head.hidden = !s.head.querySelector(".ss-chip:not([hidden])");
-  }
+  // 모델이 요약을 빠뜨린 섹션: 칩은 자리에 그대로 두고(줄이 접혀 읽던 자리가 밀리지 않게) 점선으로만 구분.
+  // 누르면 '요약이 없습니다' + '이 섹션 더 묻기'
   function refresh() {
-    for (const s of secs.values()) {
+    for (const s of gistSecs) {
       if (!s.box.hidden) fillBox(s);
-      syncChip(s);
+      s.gistChip.classList.toggle("ss-empty", !!gists && !gists[s.id]);
     }
   }
 
@@ -140,7 +166,7 @@
     const open = s.box.hidden;
     s.box.hidden = !open;
     s.gistChip.setAttribute("aria-expanded", String(open));
-    if (!open) { syncChip(s); return; }
+    if (!open) return;
     fillBox(s);
     // 사용자가 기다리는 중: idle 차례를 기다리지 않고 바로 받기
     if (!gists && !gistLoading && !gistFail) loadGists().catch(() => {});
@@ -154,17 +180,18 @@
       presets: [
         { id: "section-study:example", label: "예시로", q: "이 섹션 내용을 구체적인 예시로 설명해줘" },
         { id: "section-study:flow", label: "논문 흐름에서", q: "이 섹션이 논문 전체 흐름에서 어떤 역할을 하는지 알려줘" },
-        { id: "section-study:quiz", label: "이 섹션 퀴즈", run: () => { const t = quizTarget(s.el); t && openQuiz(t); } },
+        // run은 새로고침·탭 복원 때 저장되지 않음 (JSON) → 복원된 시트에서는 q로 대화 안에서 퀴즈
+        { id: "section-study:quiz", label: "이 섹션 퀴즈", q: QUIZ_FALLBACK_Q, run: () => { const t = quizTarget(s.el); t && openQuiz(t); } },
       ],
       autoAsk: { q: explainQuestion(title), label: "섹션 풀이", id: "section-study:explain" },
     });
   }
 
   // ---------- 퀴즈 (peek 하나, 한 문항씩) ----------
-  // 퀴즈 대상은 최상위 섹션 (칩과 같은 캐시를 씀)
+  // 퀴즈 대상은 최상위 섹션 (칩과 같은 캐시를 씀). 참고문헌 등 그 밖의 섹션은 null
   function quizTarget(el) {
-    const top = el && (el.closest("section.ltx_section, section.ltx_appendix") || el.closest("section[id]"));
-    if (!top || !top.id) return null;
+    const top = topSectionOf(el);
+    if (!top) return null;
     return secs.get(top.id) || { id: top.id, el: top, titleEl: titleElOf(top) };
   }
 
@@ -175,7 +202,7 @@
       if (!r.ok) {
         let msg = "";
         try { msg = (await r.json()).detail; } catch { /* 무시 */ }
-        throw new Error(typeof msg === "string" && msg ? msg : `HTTP ${r.status}`);
+        throw Object.assign(new Error(typeof msg === "string" && msg ? msg : `HTTP ${r.status}`), { status: r.status });
       }
       const items = await r.json();
       if (!Array.isArray(items) || !items.length) throw new Error("문항이 없습니다");
@@ -208,8 +235,9 @@
   function renderQuiz(ctx, q) {
     const { body } = ctx;
     if (q.error) {
-      body.replaceChildren(note(`퀴즈를 만들지 못했습니다. ${q.error.message || ""}`.trim()),
-        h("div", { class: "ss-actions" }, btn("다시", () => showQuiz(ctx, true))));
+      // 404(논문에 없는 섹션)는 다시 해도 같음 → '다시' 없음
+      const retry = q.error.status === 404 ? null : h("div", { class: "ss-actions" }, btn("다시", () => showQuiz(ctx, true)));
+      body.replaceChildren(note(`퀴즈를 만들지 못했습니다. ${q.error.message || ""}`.trim()), ...(retry ? [retry] : []));
       return;
     }
     const st = q.state;
@@ -292,10 +320,10 @@
     UI.toast("근거 문장으로 이동했어요", { actionLabel: "퀴즈로", onAction: () => openQuiz(ctx.s) });
   }
 
-  // 시트 프리셋: 선택이 섹션 안이면 '이 섹션 퀴즈' (질문 대신 퀴즈 peek)
+  // 시트 프리셋: 선택이 최상위 섹션(하위 섹션 포함) 안이면 '이 섹션 퀴즈' (질문 대신 퀴즈 peek). 참고문헌 등은 없음
   App.addPreset({
     id: "section-study:quiz", label: "이 섹션 퀴즈", order: 900,
-    match: si => (si && si.sectionId ? 1 : false),
+    match: si => (si && si.sectionId && topSectionOf(si.sectionEl || document.getElementById(si.sectionId)) ? 1 : false),
     run: session => {
       const id = session && session.selInfo && session.selInfo.sectionId;
       const s = quizTarget(id ? document.getElementById(id) : null);
@@ -303,5 +331,5 @@
     },
   });
 
-  if (secs.size) App.idle(() => loadGists()).catch(() => { /* 상태 칩이 '다시'를 보여 줌 */ });
+  if (gistSecs.length) App.idle(() => loadGists()).catch(() => { /* 상태 칩이 '다시'를 보여 줌 */ });
 })();

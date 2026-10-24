@@ -1,12 +1,22 @@
 /* section-study: 섹션 제목 아래 요약·퀴즈 칩 줄 + 요약 상자, 퀴즈 peek */
+/* 정답·오답 색: 퀴즈 peek 배경(--card) 위에서 WCAG AA 4.5:1 이상이 되게 테마별로 */
+:root { --ss-ok: #15803d; --ss-no: #b91c1c; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="sepia"]) { --ss-ok: #4ade80; --ss-no: #f87171; }
+}
+:root[data-theme="light"] { --ss-ok: #15803d; --ss-no: #b91c1c; }
+:root[data-theme="dark"] { --ss-ok: #4ade80; --ss-no: #f87171; }
+:root[data-theme="sepia"] { --ss-ok: #166534; --ss-no: #991b1b; }
+
 .ss-head { margin: -0.3em 0 0.9em; font-size: 14px; line-height: 1.55; }
-.ss-head[hidden], .ss-chip[hidden] { display: none; }
 .ss-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .ss-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 12px; border: 1px solid var(--line);
   border-radius: 999px; background: var(--card); color: var(--muted); font: inherit; font-size: 13px; }
 .ss-chip[aria-expanded]::after { content: "▾"; font-size: 11px; transition: transform .15s ease; }
 .ss-chip[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
 .ss-chip[aria-expanded="true"]::after { transform: rotate(180deg); }
+/* 모델이 요약을 빠뜨린 섹션: 자리는 그대로(읽던 위치가 밀리지 않게), 점선으로만 구분 */
+.ss-chip.ss-empty { border-style: dashed; }
 .ss-box { margin-top: 8px; padding: 10px 12px; border-left: 3px solid var(--accent); border-radius: 0 10px 10px 0;
   background: var(--card); color: var(--fg); }
 /* 요약 글은 복사할 수 있게 (.pr-ui는 기본 선택 불가) */
@@ -28,13 +38,13 @@
 .ss-choice { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 10px 12px; border: 1px solid var(--line);
   border-radius: 12px; background: var(--bg); color: var(--fg); font: inherit; text-align: left; }
 .ss-choice:disabled { opacity: 1; color: var(--fg); }
-.ss-choice.ss-right { border-color: #16a34a; background: rgba(22, 163, 74, .14); }
-.ss-choice.ss-wrong { border-color: #dc2626; background: rgba(220, 38, 38, .12); }
+.ss-choice.ss-right { border-color: var(--ss-ok); background: rgba(22, 163, 74, .14); }
+.ss-choice.ss-wrong { border-color: var(--ss-no); background: rgba(220, 38, 38, .12); }
 .ss-cnum { flex: none; color: var(--muted); }
 .ss-ctext p { display: inline; margin: 0; }
 .ss-reveal { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
-.ss-ok { color: #16a34a; }
-.ss-no { color: #dc2626; }
+.ss-ok { color: var(--ss-ok); }
+.ss-no { color: var(--ss-no); }
 .ss-why { margin-top: 4px; }
 .ss-score { margin: 4px 0 8px; font-weight: 600; }
 .ss-review { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }

@@ -19,7 +19,9 @@ const QUIZ = [
 ];
 const json = body => ({ status: 200, body: JSON.stringify(body), contentType: "application/json", headers: { "X-Offline-Cacheable": "1" } });
 
-// 바깥 네트워크 차단, /api/ask는 고정 답, section-study API는 테스트가 정한 응답
+// 바깥 네트워크 차단, /api/ask는 고정 답, section-study API는 테스트가 정한 응답.
+// 전체 번들에서 돎: 다른 기능의 훅(질문 뒤에 붙는 지시·context의 <reader>·다른 오프라인 URL)이 있어도 깨지지 않게
+// 질문·context·offlineUrls는 '포함'으로만 확인
 async function newPage(browser, { gists, quiz } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 412, height: 800 }, serviceWorkers: "block" });
   await ctx.route(u => !u.href.startsWith(BASE), r => (r.request().resourceType() === "image"
@@ -56,24 +58,30 @@ const chip = (sid, label) => `[id="${sid}"] > .ss-head .ss-chip:text-is("${label
 test("칩 줄은 제목 바로 뒤(.pr-ui), 퀴즈 칩은 최상위만, 색인에 안 들어감 · idle에 요약을 받아 paper:gists", async browser => {
   const page = await newPage(browser);
   await open(page);
+  const before = await page.evaluate(() => document.querySelector('[id="S2.SS1"] > .ss-head').getBoundingClientRect().height);
   await until(page, () => window.__gists.length === 1);
   const r = await page.evaluate(() => {
     const heads = [...document.querySelectorAll("#paper .ss-head")];
+    const sub = document.querySelector('[id="S2.SS1"] > .ss-head');
     return {
       ids: heads.map(h => h.parentElement.id),
-      afterTitle: heads.every(h => h.previousElementSibling.classList.contains("ltx_title") && h.classList.contains("pr-ui")),
+      // 제목 바로 뒤, section-translate의 .tr-ko 제목이 먼저 들어갔으면 그 뒤
+      afterTitle: heads.every(h => /\b(ltx_title|tr-ko)\b/.test(h.previousElementSibling.className) && h.classList.contains("pr-ui")),
       quiz: heads.filter(h => [...h.querySelectorAll(".ss-chip")].some(b => b.textContent === "퀴즈")).map(h => h.parentElement.id),
       inIndex: PaperAnchor.index().text.includes("요약"),
       tocTitle: PaperAnchor.textOf(document.querySelector("#S2 > .ltx_title")),
-      hiddenNoGist: document.querySelector('[id="S2.SS1"] > .ss-head').hidden,
+      // 요약이 빠진 섹션: 줄을 접지 않고(읽던 자리 그대로) 칩만 점선
+      noGist: { hidden: sub.hidden, empty: sub.querySelector(".ss-chip").classList.contains("ss-empty"), height: sub.getBoundingClientRect().height },
+      emptyOthers: [...document.querySelectorAll("#paper .ss-chip.ss-empty")].length,
       map: Object.keys(window.__gists[0]),
-      offline: PaperApp.offlineUrls(),
+      offline: PaperApp.offlineUrls().includes("/api/section-study/2401.00001/gists"),
     };
   });
   assert.deepEqual(r, {
     ids: ["S1", "S2", "S2.SS1", "A1"], afterTitle: true, quiz: ["S1", "S2", "A1"], inIndex: false, tocTitle: "2 Method",
-    hiddenNoGist: true, map: ["S1", "S2", "A1"], offline: ["/api/section-study/2401.00001/gists"],
+    noGist: { hidden: false, empty: true, height: before }, emptyOthers: 1, map: ["S1", "S2", "A1"], offline: true,
   });
+  assert.ok(before > 0);
   assert.deepEqual(page.hits, ["/api/section-study/2401.00001/gists"]);
   assert.deepEqual(page.errors, []);
 });
@@ -92,9 +100,10 @@ test("'요약' 칩 → 요약 상자(즉시) → '이 섹션 더 묻기'가 시�
   await until(page, () => PaperApp.session && PaperApp.session.history.length === 2);
   const s = await page.evaluate(() => ({ open: PaperApp.isSheetOpen(), quote: PaperApp.session.quote, presets: [...document.querySelectorAll("#presets button")].map(b => b.textContent) }));
   assert.deepEqual(s, { open: true, quote: "2 Method", presets: ["예시로", "논문 흐름에서", "이 섹션 퀴즈"] });
-  assert.equal(page.asks[0].question, "2 Method 섹션을 쉽게 풀어줘");
+  // 다른 기능이 질문 뒤에 지시를 붙이거나(answer-tools) context에 <reader>를 더할 수 있음(smart-presets)
+  assert.ok(page.asks[0].question.startsWith("2 Method 섹션을 쉽게 풀어줘"), page.asks[0].question);
   assert.equal(page.asks[0].section, "2 Method");
-  assert.equal(page.asks[0].context, "섹션 요약: 라우터가 게이트 점수를 계산한다.");
+  assert.ok(page.asks[0].context.includes("섹션 요약: 라우터가 게이트 점수를 계산한다."), page.asks[0].context);
   // 시트가 열린 채로 다른 칩 탭(칩이 시트 아래에 깔릴 수 있어 click 이벤트로): 기능 컨트롤이라 '내려두기'가 안 됨
   const after = await page.evaluate(() => {
     document.querySelector("#S1 > .ss-head .ss-chip").click();
@@ -156,6 +165,47 @@ test("선택 → 질문하기 → '이 섹션 퀴즈' 프리셋은 최상위 섹
   assert.ok((await page.textContent(".ss-quiz-peek .pr-peek-head b")).includes("2 Method"));
   assert.ok(page.hits.includes("/api/section-study/2401.00001/quiz/S2"));
   assert.equal(page.asks.length, 0, "질문 대신 퀴즈");
+});
+
+test("참고문헌 선택에는 '이 섹션 퀴즈' 프리셋이 없음 · 없는 섹션(404) 오류에는 '다시'가 없음", async browser => {
+  const page = await newPage(browser, { quiz: () => ({ status: 404, body: '{"detail":"논문에 없는 섹션입니다."}', contentType: "application/json" }) });
+  await open(page);
+  await page.evaluate(() => document.querySelector("#bib").scrollIntoView());
+  await page.evaluate(() => {
+    const n = document.querySelector('[id="bib.bib1"] .ltx_bibblock').firstChild, r = document.createRange();
+    r.setStart(n, 0); r.setEnd(n, 8);
+    PaperApp.selectRange(r);
+  });
+  await page.click('#sel-bar button[data-id="ask"]');
+  const bibPresets = await page.evaluate(() => [...document.querySelectorAll("#presets button")].map(b => b.dataset.id));
+  assert.ok(!bibPresets.includes("section-study:quiz"), bibPresets.join());
+  await page.evaluate(() => PaperApp.closeSheet());
+  // 404: 안내만, '다시' 없음
+  await page.click(chip("S1", "퀴즈"));
+  await until(page, () => /못했습니다/.test(document.querySelector(".ss-quiz .ss-note")?.textContent || ""));
+  const r = await page.evaluate(() => ({
+    note: document.querySelector(".ss-quiz .ss-note").textContent,
+    buttons: [...document.querySelectorAll(".ss-quiz button")].map(b => b.textContent),
+  }));
+  assert.deepEqual(r, { note: "퀴즈를 만들지 못했습니다. 논문에 없는 섹션입니다.", buttons: [] });
+  assert.deepEqual(page.errors, []);
+});
+
+test("'섹션 질문' 시트의 '이 섹션 퀴즈'는 새로고침 복원 뒤에도 원문 라벨을 질문으로 보내지 않음", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  await until(page, () => window.__gists.length === 1);
+  await page.click(chip("S2", "요약"));
+  await page.click('#S2 > .ss-head button:text-is("이 섹션 더 묻기")');
+  await until(page, () => PaperApp.session && PaperApp.session.history.length === 2);
+  await page.reload();
+  await page.waitForFunction(() => window.PaperApp && document.readyState === "complete" && PaperApp.session);
+  await page.evaluate(() => PaperApp.restoreSheet());
+  await page.click('#presets button[data-id="section-study:quiz"]');
+  await until(page, () => PaperApp.session.history.length === 4);
+  const q = page.asks[page.asks.length - 1].question;
+  assert.ok(q.startsWith("이 섹션을 이해했는지 확인하는 4지선다 문제 3개를 내줘"), q);
+  assert.deepEqual(page.errors, []);
 });
 
 test("요약 받기 실패: 상태 칩 '다시'와 상자 안 '다시' → 다시 받으면 칩이 사라지고 요약 표시", async browser => {
