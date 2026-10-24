@@ -195,43 +195,94 @@ test("peek의 '이 부분 질문': 대상 내용(수식은 $alttext$)을 선택�
   assert.deepEqual(page.errors, []);
 });
 
-test("답변 속 참조: 칠하기만(답변 DOM 그대로), 탭하면 peek, 이동하면 시트 내려두기, 다시 그려도 따라감", async browser => {
-  const ANSWER = "Figure 1과 식 (1)을 보세요. 근거는 [1]이고 Section 2.1과 Theorem 1, Table 9도 언급합니다.";
-  const page = await newPage(browser, { ask: (b, n) => (n === 1 ? ANSWER : "추가 답변") });
+test("선택이 있어도 링크가 이김: 해시 이동 없이 peek, 문장 모드(20, allowWithSelection)보다 먼저 (§5.4)", async browser => {
+  const page = await newPage(browser);
   await open(page);
-  await page.evaluate(() => PaperApp.openSheet({ quote: "x", selection: "x", autoAsk: "Q" }));
-  await until(page, () => PaperApp.session && PaperApp.session.history.length === 2);
-  await until(page, () => CSS.highlights.get("rp-ans") && CSS.highlights.get("rp-ans").size === 5);
-  const painted = await page.evaluate(() => [...CSS.highlights.get("rp-ans")].map(r => r.toString()));
-  assert.deepEqual(painted, ["Figure 1", "식 (1)", "1", "Section 2.1", "Theorem 1"]);
-  assert.equal(await page.evaluate(() => document.querySelectorAll("#answer .a a, #answer .a .pr-ui").length), 0, "답변에 링크·UI를 넣지 않음");
-  const pointOf = text => page.evaluate(text => {
-    const r = [...CSS.highlights.get("rp-ans")].find(x => x.toString() === text);
-    const b = r.getBoundingClientRect();
-    return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
-  }, text);
-  let pt = await pointOf("Figure 1");
-  await page.mouse.click(pt.x, pt.y);
+  // smart-presets 문장 모드와 같은 모양의 처리기 (보통 글자 탭을 받음)
+  await page.evaluate(() => {
+    window.__sentence = 0;
+    PaperApp.addTapHandler({ id: "test:sentence", priority: 20, allowWithSelection: true,
+      test: e => !e.target.closest("a[href]") && !!e.target.closest(".ltx_p"), handle: () => { window.__sentence++; } });
+  });
+  const sel = await showLink(page, '#S2\\.p1 a[href="#S2.E1"]');
+  const selectSome = () => page.evaluate(() => {
+    const p = document.querySelector("#S2\\.p1 .ltx_p"), r = document.createRange();
+    r.setStart(p.firstChild, 4); r.setEnd(p.firstChild, 10);
+    getSelection().removeAllRanges(); getSelection().addRange(r);
+  });
+  await selectSome();
+  const y0 = await page.evaluate(() => scrollY);
+  await page.click(sel);
   await until(page, () => document.querySelector(".rp-peek"));
-  assert.equal((await peeks(page))[0].title, "Figure 1");
-  assert.equal(await page.evaluate(() => PaperApp.isSheetOpen()), true, "peek는 시트 위에");
-  await clickAction(page, "그 위치로 이동");
-  await until(page, () => !PaperApp.isSheetOpen() && !document.getElementById("sheet-pill").hidden && !document.getElementById("back-chip").hidden);
-  // 다시 열고 [1] → 참고문헌 peek, '이 부분 질문'은 지금 대화에 이어서
-  await page.evaluate(() => { PaperNav.back(); PaperApp.restoreSheet(); });
-  pt = await pointOf("1");
-  await page.mouse.click(pt.x, pt.y);
+  assert.equal((await peeks(page))[0].title, "식 (1)");
+  // (history에는 peek 레이어의 Back 항목만 생김: 해시 이동이 아님)
+  const after = await page.evaluate(() => ({ y: scrollY, hash: location.hash, sentence: window.__sentence }));
+  assert.deepEqual(after, { y: y0, hash: "", sentence: 0 });
+  await page.keyboard.press("Escape");
+  await until(page, () => !document.querySelector(".pr-peek"));
+  // 각주 표시도 선택 중에 열림, 보통 글자 탭은 그대로 문장 모드가 받음
+  await page.evaluate(() => document.querySelector("#S1\\.p1 .ltx_note > .ltx_note_mark").scrollIntoView({ block: "center" }));
+  await selectSome();
+  await page.click("#S1\\.p1 .ltx_note > .ltx_note_mark");
   await until(page, () => document.querySelector(".rp-peek"));
-  const [bib] = await peeks(page);
-  assert.equal(bib.title, "참고문헌 [1]");
-  assert.deepEqual(bib.actions, ["그 위치로 이동", "이 부분 질문", "1곳에서 인용"]);
-  await clickAction(page, "이 부분 질문");
-  await until(page, () => PaperApp.session.history.length === 4);
-  assert.equal(page.asks[1].question, "참고문헌 [1]에 대해 자세히 설명해줘");
-  assert.equal(page.asks[1].selection, "x", "같은 대화");
-  // 근거 칩처럼 답변을 다시 그리면 (renderAnswerNow) 새 글에서 다시 찾음
-  await page.evaluate(() => renderAnswerNow(document.querySelector("#answer .a"), "그림 1만 남았습니다."));
-  await until(page, () => [...CSS.highlights.get("rp-ans")].map(r => r.toString()).join("|") === "그림 1");
+  assert.equal((await peeks(page))[0].title, "각주 1");
+  await page.keyboard.press("Escape");
+  await until(page, () => !document.querySelector(".pr-peek"));
+  await page.evaluate(() => document.querySelector("#S2\\.p1 .ltx_p").scrollIntoView({ block: "center" }));
+  await selectSome();
+  const box = await page.evaluate(() => { const r = document.createRange(), t = document.querySelector("#S2\\.p1 .ltx_p").firstChild;
+    r.setStart(t, 0); r.setEnd(t, 3); const b = r.getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; });
+  await page.mouse.click(box.x, box.y);
+  await sleep(100);
+  assert.equal(await page.evaluate(() => window.__sentence), 1, "보통 글자 탭은 문장 모드로");
+  assert.equal(await page.evaluate(() => document.querySelectorAll(".rp-peek").length), 0);
+  assert.deepEqual(page.errors, []);
+});
+
+test("각주 표시는 키보드로도: tabindex·role=button·이름, Enter → peek, 닫으면 표시로 초점 복귀", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  const mark = "#S1\\.p1 .ltx_note > .ltx_note_mark";
+  const attrs = await page.evaluate(m => {
+    const el = document.querySelector(m);
+    return { tab: el.tabIndex, role: el.getAttribute("role"), label: el.getAttribute("aria-label"),
+      inner: document.querySelector("#S1\\.p1 .ltx_note_content .ltx_note_mark").hasAttribute("tabindex") };
+  }, mark);
+  assert.deepEqual(attrs, { tab: 0, role: "button", label: "각주 1", inner: false });
+  await page.focus(mark);
+  await page.keyboard.press("Enter");
+  await until(page, () => document.querySelector(".rp-peek"));
+  const [p] = await peeks(page);
+  assert.equal(p.title, "각주 1");
+  assert.equal(p.text, "The router is trained jointly with the experts.");
+  await page.keyboard.press("Escape");
+  await until(page, () => !document.querySelector(".pr-peek"));
+  await until(page, m => document.activeElement === document.querySelector(m), mark);
+  // 섹션 peek의 복제 안 표시도 Space로
+  await page.evaluate(() => PaperApp.feature("ref-peek").open("S1"));
+  await page.focus(".rp-peek .rp-body .ltx_note_mark[role=button]");
+  await page.keyboard.press(" ");
+  await until(page, () => document.querySelectorAll(".pr-peek").length === 2);
+  assert.deepEqual((await peeks(page)).map(x => x.title), ["1 Introduction", "각주 1"]);
+  assert.deepEqual(page.errors, []);
+});
+
+test("꼬리표 없는 그림·표·알고리즘: 탭한 링크의 title, 없으면 종류 + 링크 글자", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  // 번호 없는 figure*·캡션 없는 float 흉내: 캡션의 .ltx_tag를 뺌
+  await page.evaluate(() => ["S2.F1", "S2.T1", "alg1"].forEach(id => document.getElementById(id).querySelectorAll(".ltx_tag").forEach(t => t.remove())));
+  const titleAfterTap = async sel => {
+    await page.click(await showLink(page, sel));
+    await until(page, () => document.querySelector(".rp-peek"));
+    const [p] = await peeks(page);
+    await page.keyboard.press("Escape");
+    await until(page, () => !document.querySelector(".pr-peek"));
+    return p.title;
+  };
+  assert.equal(await titleAfterTap('#S2\\.p1 a[href="#S2.F1"]'), "Figure 1", "링크 title 'Figure 1 ‣ …'");
+  assert.equal(await titleAfterTap('a[href="#S2.T1"]:not([title])'), "표 1", "title 없고 글자는 번호뿐");
+  assert.equal(await titleAfterTap('a[href="#alg1"]'), "Algorithm 1", "글자가 이미 이름");
   assert.deepEqual(page.errors, []);
 });
 

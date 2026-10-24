@@ -1,4 +1,4 @@
-// ref-peek 순수 함수: 참조 종류 판별, 꼬리표·인용 열쇠, 답변 속 참조 찾기, 문장 경계, 제목
+// ref-peek 순수 함수: 참조 종류 판별, 문장 경계, 제목
 "use strict";
 const { test, assert, load } = require("./_runner");
 const rp = load("static/features/ref-peek.js");
@@ -24,59 +24,6 @@ test("classifyHref: LaTeXML의 다른 id 모양 (번호 없는 식, 부록, 정�
   assert.equal(rp.classifyHref("S2.E1"), "equation", "# 없이도");
   assert.equal(rp.idFromHref("#S2%2EE1"), "S2.E1", "퍼센트 인코딩 풀기");
   assert.equal(rp.idFromHref("https://x/y#bib.bib3"), "bib.bib3");
-});
-
-test("tagKeys: 대상 꼬리표 → 열쇠", () => {
-  assert.deepEqual(rp.tagKeys("figure", "Figure 1: "), ["fig:1"]);
-  assert.deepEqual(rp.tagKeys("table", "Table 1: "), ["tab:1"]);
-  assert.deepEqual(rp.tagKeys("float", "Algorithm 1 "), ["alg:1"]);
-  assert.deepEqual(rp.tagKeys("theorem", "Theorem 1"), ["theorem:1"]);
-  assert.deepEqual(rp.tagKeys("theorem", "Lemma 2.1"), ["lemma:2.1"]);
-  assert.deepEqual(rp.tagKeys("equation", "(1)"), ["eq:1"]);
-  assert.deepEqual(rp.tagKeys("equation", "(A.1)"), ["eq:a.1"]);
-  assert.deepEqual(rp.tagKeys("section", "2.1 "), ["sec:2.1"]);
-  assert.deepEqual(rp.tagKeys("section", "Appendix A "), ["sec:a"]);
-  assert.deepEqual(rp.tagKeys("section", "A.1"), ["sec:a.1"]);
-  assert.deepEqual(rp.tagKeys("bibitem", "[12]"), ["bib:12"]);
-  assert.deepEqual(rp.tagKeys("figure", ""), []);
-});
-
-test("bibKeys: 번호·저자-연도, 연도만 있는 링크 글자는 버림", () => {
-  assert.deepEqual(rp.bibKeys("[3]"), ["bib:3"]);
-  assert.deepEqual(rp.bibKeys("Shazeer et al. (2017)"), ["cite:shazeer:2017", "cite:shazeer"]);
-  assert.deepEqual(rp.bibKeys("Shazeer et al., 2017", false), ["cite:shazeer:2017", "cite:shazeer"]);
-  assert.deepEqual(rp.bibKeys("van der Berg and Smith (2020)"), ["cite:berg:2020", "cite:berg"]);
-  assert.deepEqual(rp.bibKeys("Ünal et al."), ["cite:unal"]);
-  assert.deepEqual(rp.bibKeys("2017", false), []);
-  assert.deepEqual(rp.bibKeys("1", false), []);
-});
-
-const keysOf = text => rp.findMentions(text).map(m => [text.slice(m.start, m.end), m.keys[0]]);
-
-test("findMentions: 영어 참조", () => {
-  assert.deepEqual(keysOf("See Figure 3 and Fig. 2(a), Table 2, Eq. (5), Section 4.2, Appendix A, Theorem 1, Algorithm 1."), [
-    ["Figure 3", "fig:3"], ["Fig. 2(a)", "fig:2a"], ["Table 2", "tab:2"], ["Eq. (5)", "eq:5"],
-    ["Section 4.2", "sec:4.2"], ["Appendix A", "sec:a"], ["Theorem 1", "theorem:1"], ["Algorithm 1", "alg:1"],
-  ]);
-  const sub = rp.findMentions("Fig. 2b");
-  assert.deepEqual(sub[0].keys, ["fig:2b", "fig:2"], "하위 그림이 없으면 그림으로");
-});
-
-test("findMentions: 한국어 참조 (낱말 속 '표'·'식'은 아님)", () => {
-  assert.deepEqual(keysOf("그림 3과 표 2, 식 (5)를 보면 4.2절과 §3, 부록 A, 정리 1, 보조정리 2, 알고리즘 1"), [
-    ["그림 3", "fig:3"], ["표 2", "tab:2"], ["식 (5)", "eq:5"], ["4.2절", "sec:4.2"], ["§3", "sec:3"],
-    ["부록 A", "sec:a"], ["정리 1", "theorem:1"], ["보조정리 2", "lemma:2"], ["알고리즘 1", "alg:1"],
-  ]);
-  assert.deepEqual(keysOf("(1)식에서"), [["(1)식", "eq:1"]]);
-  assert.deepEqual(keysOf("이 방식 (2)와 발표 3, 대표 4"), [], "방식·발표·대표 속 글자");
-});
-
-test("findMentions: 인용 [n]·저자 et al.", () => {
-  assert.deepEqual(keysOf("as in [1, 2] and [12]"), [["1", "bib:1"], ["2", "bib:2"], ["12", "bib:12"]]);
-  assert.deepEqual(keysOf("range [0, 1] or [a]"), [], "0이 있으면 구간");
-  const m = rp.findMentions("Shazeer et al. (2017) and Fedus 등은");
-  assert.deepEqual(m.map(x => x.keys), [["cite:shazeer:2017", "cite:shazeer"], ["cite:fedus"]]);
-  assert.deepEqual(rp.findMentions("OpenAI (2023)")[0].keys, ["cite:openai:2023"]);
 });
 
 test("sentenceBounds: 약어·수식 안의 마침표에서 끊지 않음", () => {
@@ -119,4 +66,21 @@ test("titleFrom: 꼬리표 우선, 없으면 링크 title 첫 부분", () => {
   assert.equal(rp.titleFrom({ kind: "footnote", tag: "1" }), "각주 1");
   assert.equal(rp.titleFrom({ kind: "figure", linkTitle: "Figure 1 ‣ 2 Method ‣ Paper", linkText: "1" }), "Figure 1");
   assert.equal(rp.titleFrom({ kind: "other" }), "참조");
+});
+
+test("titleFrom: 꼬리표 없는 그림 (figure*, 캡션 없는 float) → 링크 title, 위치뿐인 title은 건너뛰고 링크 글자", () => {
+  assert.equal(rp.titleFrom({ kind: "figure", tag: "", noun: "그림", linkTitle: "Figure 3 ‣ 4 Results ‣ P", linkText: "3" }), "Figure 3");
+  assert.equal(rp.titleFrom({ kind: "figure", noun: "그림", linkTitle: "In 4 Results ‣ P", linkText: "3" }), "그림 3", "'In …' title은 위치뿐");
+  assert.equal(rp.titleFrom({ kind: "figure", noun: "표", linkText: "2" }), "표 2");
+  assert.equal(rp.titleFrom({ kind: "figure", noun: "그림", linkText: "2(a)" }), "그림 2(a)");
+  assert.equal(rp.titleFrom({ kind: "figure", noun: "그림", linkText: "A.1" }), "그림 A.1");
+  assert.equal(rp.titleFrom({ kind: "figure", noun: "알고리즘", linkText: "Algorithm 1" }), "Algorithm 1", "글자가 이미 이름이면 그대로");
+  assert.equal(rp.titleFrom({ kind: "figure", linkText: "2" }), "2", "noun을 모르면 글자 그대로");
+  assert.equal(rp.titleFrom({ kind: "figure", tag: "Figure 2: ", linkTitle: "Other ‣ x" }), "Figure 2", "꼬리표가 있으면 링크는 안 봄");
+  assert.equal(rp.titleFrom({ kind: "equation", linkTitle: "In 2 Method ‣ P", linkText: "1" }), "수식", "수식은 링크를 안 봄");
+  assert.equal(rp.titleFrom({ kind: "theorem", linkTitle: "Lemma 2 ‣ 3 Theory ‣ P" }), "Lemma 2");
+});
+
+test("답변 속 참조는 범위 밖 (§8.1): 그 함수를 내보내지 않음", () => {
+  for (const name of ["findMentions", "tagKeys", "bibKeys"]) assert.equal(rp[name], undefined, name);
 });
