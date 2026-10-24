@@ -1,11 +1,15 @@
 """entry-routes: /abs·/pdf·/html 리다이렉트, /share 공유 타깃, HTML 없는 논문의 초록 페이지, 하이라이트 공유 API"""
 import html
 import json
+import os
 import re
+import time
 from pathlib import Path
+from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 from tests.helpers import CoreTestCase, core
+from features import entry_routes as er
 from features.entry_routes import find_arxiv_id
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -147,6 +151,54 @@ class ShareApiTests(CoreTestCase):
         {"quote": "routes each token to two experts", "prefix": "model that ", "suffix": ". The", "color": "yellow", "note": "핵심"},
         {"quote": "load balancing loss", "q": "왜 필요해?", "a": "전문가가 **고르게** 쓰이도록"},
     ]
+
+    def setUp(self):
+        super().setUp()
+        er._hits.clear()
+        er._disk["dir"] = None
+
+    def post_raw(self, body):
+        # 짝 없는 서로게이트는 ASCII 이스케이프(\udc00)로만 JSON에 실을 수 있음 (브라우저 JSON.stringify와 같게)
+        return self.client.post("/api/entry-routes/share", content=json.dumps(body).encode(),
+                                headers={"content-type": "application/json"})
+
+    def test_lone_surrogates_are_dropped_not_500(self):
+        body = {"arxiv_id": self.paper_id, "title": "T \ud83d", "items": [
+            {"quote": "emoji cut \ud83d", "prefix": "\udc00xyz", "note": "메모 😀 ok", "a": "답 \udbff"}]}
+        r = self.post_raw(body)
+        self.assertEqual(r.status_code, 200, r.text)
+        rec = json.loads(next(self.cache.glob("*.entry-routes.share.json")).read_text(encoding="utf-8"))
+        item = rec["items"][0]
+        self.assertEqual((rec["title"], item["quote"], item["prefix"], item["a"]), ("T ", "emoji cut ", "xyz", "답 "))
+        self.assertEqual(item["note"], "메모 😀 ok")  # 온전한 짝은 그대로
+        # 반쪽만 있던 인용은 빈 글 → 422
+        self.assertEqual(self.post_raw({"arxiv_id": self.paper_id, "items": [{"quote": "\udc00"}]}).status_code, 422)
+
+    def test_rate_limit_per_client(self):
+        with mock.patch.object(er, "SHARE_RATE", (2, 600)):
+            codes = [self.client.post("/api/entry-routes/share", json={"arxiv_id": self.paper_id, "items": self.ITEMS}).status_code
+                     for _ in range(3)]
+        self.assertEqual(codes, [200, 200, 429])
+        self.assertEqual(len(list(self.cache.glob("*.entry-routes.share.json"))), 2)
+
+    def test_disk_cap_prunes_old_shares_then_refuses(self):
+        def post():
+            return self.client.post("/api/entry-routes/share", json={"arxiv_id": self.paper_id, "items": self.ITEMS})
+
+        old = self.cache / "oldshare0001.entry-routes.share.json"
+        old.write_text("x" * 1900, encoding="utf-8")
+        long_ago = time.time() - er.SHARE_KEEP - 86400
+        os.utime(old, (long_ago, long_ago))
+        with mock.patch.object(er, "SHARE_DISK_MAX", 2000):
+            r = post()
+            self.assertEqual(r.status_code, 200)  # 상한에 닿아 오래된 공유를 지우고 저장
+            self.assertFalse(old.exists())
+            (self.cache / "newshare0001.entry-routes.share.json").write_text("x" * 1900, encoding="utf-8")
+            er._disk["dir"] = None
+            self.assertEqual(post().status_code, 507)  # 최근 공유만으로 꽉 참: 지우지 않고 거절
+        self.assertTrue((self.cache / "newshare0001.entry-routes.share.json").exists())
+        sid = r.json()["id"]
+        self.assertEqual(self.client.get(f"/api/entry-routes/share/{sid}").status_code, 200)
 
     def test_create_and_read(self):
         r = self.client.post("/api/entry-routes/share", json={"arxiv_id": self.paper_id, "title": "T", "items": self.ITEMS})
