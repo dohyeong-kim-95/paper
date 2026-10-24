@@ -1,7 +1,7 @@
 // answer-tools 순수 함수: 근거 줄 파싱·제거, 질문 훅(한 번만), 읽어주기 텍스트
 "use strict";
 const { test, assert, load } = require("./_runner");
-const { EVIDENCE_ASK, withEvidence, splitEvidence, parseEvidence, cleanQuote, speakable } = load("static/features/answer-tools.js");
+const { EVIDENCE_ASK, withEvidence, splitEvidence, parseEvidence, cleanQuote, chipWorthy, speakable } = load("static/features/answer-tools.js");
 const { buildPayload, makeSession } = load("static/app.js");
 
 test("parseEvidence: 근거 줄 두 개 → 인용 두 개", () => {
@@ -64,7 +64,53 @@ test("splitEvidence: 따옴표 없는 영어 근거, 말줄임 인용, 중복·�
   assert.equal(cleanQuote(' "the KD loss is cheap." '), "the KD loss is cheap");
 });
 
-test("withEvidence: /api/ask·figure-explain만, 한 번만, 번역 프리셋·빈 질문은 그대로", () => {
+test("splitEvidence: 따옴표 친 영어 용어가 섞인 한국어 '근거' 문장은 본문에 남김 (인용만 있는 줄만 근거)", () => {
+  const prose = [
+    '**근거:** 저자들은 표 2에서 "MoE"가 "dense"보다 낫다고 보고합니다.\n\n결론입니다.',
+    '답\n- 근거: 2절 "Method"에서 설명',
+    '답\n**근거:** "MoE"입니다',
+    "답\n- 근거: 표 1 (Table 1)",
+    "답\n근거: 2절 Method에서 설명한 sparse routing",
+  ];
+  for (const t of prose) assert.deepEqual(splitEvidence(t), { body: t, quotes: [], removed: 0 }, t);
+  // 인용만 있는 줄: 구분자·접속어·맨 끝 괄호 설명·짧은 꼬리('…"라는 문장')는 허용
+  const ok = [
+    ['답\n근거: "we propose a sparse mixture of experts" (3절)', ["we propose a sparse mixture of experts"]],
+    ['답\n근거: "we propose a sparse mixture" 및 "far fewer FLOPs per token"', ["we propose a sparse mixture", "far fewer FLOPs per token"]],
+    ['답\n근거: "we propose a sparse mixture of experts"라는 문장', ["we propose a sparse mixture of experts"]],
+    ['답\n근거: "MoE" — "dense"', ["MoE", "dense"]],
+  ];
+  for (const [t, quotes] of ok) assert.deepEqual([splitEvidence(t).body, splitEvidence(t).quotes], ["답", quotes], t);
+});
+
+test("splitEvidence: 근거 묶음 뒤 따옴표로 시작하는 문단은 본문 (빈 줄 뒤엔 목록 인용만 이어짐)", () => {
+  const after = splitEvidence('답\n근거: "we propose a sparse mixture of experts"\n\n"Attention"이라는 단어는 중요합니다.');
+  assert.equal(after.body, '답\n\n"Attention"이라는 단어는 중요합니다.');
+  assert.deepEqual(after.quotes, ["we propose a sparse mixture of experts"]);
+  const glued = splitEvidence('답\n근거: "we propose a sparse mixture of experts"\n"Attention"이라는 단어는 중요합니다.');
+  assert.equal(glued.body, '답\n\n"Attention"이라는 단어는 중요합니다.');
+  const quoteOnly = splitEvidence('답\n근거: "we propose a sparse mixture of experts"\n\n"Simple is better."');
+  assert.equal(quoteOnly.body, '답\n\n"Simple is better."');
+  const listed = splitEvidence('답\n근거:\n\n- "we propose a sparse mixture"\n\n- "far fewer FLOPs per token"\n\n끝.');
+  assert.deepEqual([listed.body, listed.quotes], ["답\n\n끝.", ["we propose a sparse mixture", "far fewer FLOPs per token"]]);
+  const underHead = splitEvidence('답\n\n근거:\n\n"we propose a sparse mixture"');
+  assert.deepEqual([underHead.body, underHead.quotes], ["답", ["we propose a sparse mixture"]]);
+});
+
+test("cleanQuote·splitEvidence: 둥근 작은따옴표(‘…’)는 앞뒤만 떼고, 가운데 ’는 남김", () => {
+  assert.deepEqual(parseEvidence("답입니다.\n근거: ‘we propose a sparse mixture of experts’"), ["we propose a sparse mixture of experts"]);
+  assert.deepEqual(parseEvidence("답\n- ‘no’\n근거:\n- ‘the model’s experts are sparse’"), ["the model’s experts are sparse"]);
+  assert.equal(cleanQuote("‘the model’s experts’"), "the model’s experts");
+});
+
+test("chipWorthy: 4단어 이상 영어만 칩 (짧은 인용은 단어 안·URL 안에서도 맞으므로 흐린 글)", () => {
+  assert.equal(chipWorthy("MoE"), false);
+  assert.equal(chipWorthy("sparse mixture of"), false);
+  assert.equal(chipWorthy("we propose a sparse"), true);
+  assert.equal(chipWorthy("저자들은 MoE가 dense보다 낫다고 보고"), false);
+});
+
+test("withEvidence: /api/ask·figure-explain만, 한 번만, 번역·뜻 프리셋·빈 질문은 그대로", () => {
   const p = { arxiv_id: "x", question: "쉽게 설명해줘" };
   const once = withEvidence(p, { endpoint: "/api/ask" });
   assert.equal(once.question, "쉽게 설명해줘" + EVIDENCE_ASK);
@@ -73,6 +119,7 @@ test("withEvidence: /api/ask·figure-explain만, 한 번만, 번역 프리셋·�
   assert.equal(withEvidence(p, { endpoint: "/api/figure-explain/ask" }).question, once.question);
   assert.equal(withEvidence(p, { endpoint: "/api/other" }), p);
   assert.equal(withEvidence(p, { endpoint: "/api/ask", presetId: "translate" }), p);
+  assert.equal(withEvidence(p, { endpoint: "/api/ask", presetId: "meaning" }), p, "뜻 답은 vocab이 그대로 저장");
   const empty = { question: "  " };
   assert.equal(withEvidence(empty, { endpoint: "/api/ask" }), empty);
 });
