@@ -101,3 +101,29 @@ test("runAt: 구간을 통째로 담은 run만", () => {
   assert.equal(runAt(runs, 15, 30), runs[1]);
   assert.equal(runAt([], 0, 1), null);
 });
+
+test("mergeEntries: normTerm·normTex가 같은 항목은 하나로 (정의 이어 붙이기·최대 4, 약어 합집합, 빈 ko 채움)", () => {
+  const { mergeEntries } = G;
+  const terms = [
+    { t: "load-balancing loss", a: ["LB loss"], ko: "", defs: [{ d: "뜻1", q: "q1" }] },
+    { t: "router", a: [], ko: "라우터", defs: [{ d: "r", q: "" }] },
+    { t: "Load balancing loss", a: ["LBL", "lb loss"], ko: "부하 균형 손실", defs: [{ d: "뜻1", q: "q1" }, { d: "뜻2", q: "q2" }] },
+  ].map(t => ({ ...t, _k: normTerm(t.t) }));
+  const out = mergeEntries(terms, t => t._k);
+  assert.deepEqual(out.map(t => t.t), ["load-balancing loss", "router"]);
+  assert.deepEqual(out[0].defs.map(d => d.d), ["뜻1", "뜻2"]);
+  assert.deepEqual(out[0].a, ["LB loss", "LBL"]);
+  assert.equal(out[0].ko, "부하 균형 손실");
+  assert.deepEqual([out[0].d, out[0].q], ["뜻1", "q1"]);
+
+  const syms = ["\\mathcal{L}", "\\mathcal L", "\\hat{x}", "\\hat x", "\\text{bal}", "\\mathrm{bal}"]
+    .map((tex, i) => ({ tex, _n: normTex(tex), defs: [{ d: `뜻${i}`, q: `q${i}` }] }));
+  const ms = mergeEntries(syms, s => s._n);
+  assert.deepEqual(ms.map(s => s.tex), ["\\mathcal{L}", "\\hat{x}", "\\text{bal}"]);
+  assert.deepEqual(ms[0].defs.map(d => d.d), ["뜻0", "뜻1"]);
+  // 기호 칩이 중복 없이 하나씩
+  assert.deepEqual(symbolsIn("\\mathcal{L}+\\hat{x}", ms), [0, 1]);
+
+  const many = Array.from({ length: 6 }, (_, i) => ({ tex: "x", _n: "x", defs: [{ d: `d${i}`, q: "" }] }));
+  assert.equal(mergeEntries(many, s => s._n)[0].defs.length, 4);
+});

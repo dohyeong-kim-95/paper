@@ -611,6 +611,7 @@ Objects whose values are all objects (maps) merge per key by the same rule. Anyt
 | `pr:cite-cards:bib` | cite-cards | `[{id, key, bibtex, ts}]` (the `.bib` basket; library reads it) | default |
 | `pr:equation-tools:delim` | equation-tools | `"$$" \| "$" \| "\\[" \| "none"` | default |
 | `pr:glossary:known` | glossary | `["term", ...]` | default (union) |
+| `pr:glossary:ruby` | glossary | bool: the '용어 한국어 병기' switch in the 용어 list. Until it is set, glossary follows `pr:reading-settings.ruby`; a `paper:settings` `{key: "ruby"}` event is copied into it | default |
 | `pr:highlights-notes:<baseId>` | highlights-notes | `[{id, type: hl\|note\|qa, color, anchor: {quote, prefix, suffix, paraId}, note, qa, ts}]` | default |
 | `pr:highlights-notes:threads:<baseId>` | highlights-notes | `[{id (= session.threadId), anchor, label, quote, selection, context, section, endpoint, extra, history, shown, meta, ts}]` | default |
 | `pr:highlights-notes:prefs` | highlights-notes | `{color, highlighter, useNotes}` | default |
@@ -659,7 +660,7 @@ not re-implement them. "DOM" lists the only mutations it may make inside `#paper
 | equation-tools | — | `equation-tools.js/.css` | — | `pr:equation-tools:delim` | `eq-` | — | — | — | addTapHandler 60, openSheet({presets, autoAsk}), PaperUI.copy, PaperAnchor.textOf/insertUI | action row after the equation table via insertUI |
 | figure-explain | `figure_explain.py` | `figure-explain.js/.css` | `POST /api/figure-explain/ask` (stream) | — | `fe-` | — | — | — | core.Ask subclass, build_messages, fetch_image, stream_claude, paper_index().figures, openSheet({endpoint, extra, presets, autoAsk}) | 'AI 설명' chip inside top-level figures via insertUI(..., "beforeend") |
 | figure-viewer | — | `figure-viewer.js/.css` | — | — | `fv-` | `figure-viewer` ⋯110 | — | — | addTapHandler 50, PaperUI.layer({kind: "viewer"}), cloneClean, PaperUI.share({url}), PaperApp.has("figure-explain") | none (overlay z 30, pin z 15 outside `#paper`) |
-| glossary | `glossary.py` | `glossary.js/.css` | `GET /api/glossary/{id}` | `pr:glossary:known` | `gl-`, `::highlight(gl-term)` | `glossary` ⋯80 | — | — | cached_task(8000 tokens, lists ≤30), PaperApp.idle, PaperUI.status, PaperUI.topSlot (definition chip), PaperAnchor.locate/paint/paintedAt, peek, feedback("glossary") | paint only; `PaperAnchor.wrap` is allowed only as a fallback (ruby glosses; the wrapper is not `pr-ui`, its `<rt>` is) |
+| glossary | `glossary.py` | `glossary.js/.css` | `GET /api/glossary/{id}` | `pr:glossary:known`, `pr:glossary:ruby` | `gl-`, `::highlight(gl-term)` | `glossary` ⋯80 | — | — | cached_task(8000 tokens, lists ≤30), PaperApp.idle, PaperUI.status, PaperUI.topSlot (definition chip), PaperAnchor.locate/paint/paintedAt, peek, feedback("glossary") | paint only; `PaperAnchor.wrap` is allowed only as a fallback (ruby glosses; the wrapper is not `pr-ui`, its `<rt>` is) |
 | highlights-notes | — | `highlights-notes.js/.css` | — | `pr:highlights-notes:*` | `hn-`, `::highlight(hn-<color>)` | `highlights-notes` ⋯70 | — | `highlights-notes` 30 | rangeToQuote, findQuote({root, prefix, suffix}), paint/paintedAt, addTapHandler 90, openSheet({history, shown, meta, endpoint, extra, threadId}), session.threadId, addSessionHook (`<my-notes>`), PaperUI.download/toast undo, renderAnswerNow, registerFeature `{add}` | paint only |
 | in-paper-search | `in_paper_search.py` | `in-paper-search.js/.css` | `POST /api/in-paper-search/locate` | `pr:in-paper-search:recent` | `ps-`, `::highlight(ps-match)`, `::highlight(ps-current)` | `in-paper-search` primary 30 | — | — | PaperAnchor.index/normalize/paint, jumpTo({back: false} per step), complete_text, parse_json_loose, PaperUI.layer({keepOnSheet: true}) + PaperUI.topSlot (find bar) | class `ps-declutter` on `#paper` and `ps-hit` on paragraphs |
 | library | — | `library.js/.css` (both pages) | — | `pr:library` | `lib-` | `library` ⋯60, `library:status` ⋯150, `library:bibtex` ⋯160 | — | — | PaperStore.exportAll/importAll/merge, homeSection, PaperUI.download/toast undo, registerFeature("library", {add, get}) | class `lib-cite-seen` on `a.ltx_ref` |
@@ -744,7 +745,9 @@ not re-implement them. "DOM" lists the only mutations it may make inside `#paper
 - **glossary.** Do not wrap text nodes for underlines. Paint `gl-term` ranges with `{priority: 10, fallback:
   false}` and hit-test with `paintedAt("gl-term", x, y)`. With no `CSS.highlights` there are no underlines
   (the list still works). `max_tokens` 8000, lists capped at 30. Schedule chunked work through
-  `PaperApp.idle`. React to `paper:settings` `{key: "ruby"}`. Optional `registerFeature("glossary", {lookup})`.
+  `PaperApp.idle`. The '용어 한국어 병기' (ruby) switch lives in glossary's own 용어 list and is stored in
+  `pr:glossary:ruby`; glossary still reads `pr:reading-settings.ruby` as the default and reacts to `paper:settings`
+  `{key: "ruby"}`, so reading-settings needs no ruby control. Optional `registerFeature("glossary", {lookup})`.
   The definition chip for a term whose first use is off screen goes in `PaperUI.topSlot("glossary")`. Ruby
   fallback: the `wrap` element holds paper text and is not `pr-ui`; only its `<rt>` is (rule 5).
 - **highlights-notes.** Anchors come from `rangeToQuote` + `paraId`. Re-anchor with `findQuote(quote,

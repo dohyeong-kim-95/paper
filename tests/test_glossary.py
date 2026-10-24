@@ -137,6 +137,31 @@ class CleanTests(CoreTestCase):
         self.assertEqual(g._tex_key("x^{2}"), g._tex_key("x ^ 2"))
         self.assertNotEqual(g._tex_key("\\mathcal{L}"), g._tex_key("L"))
 
+    def test_tex_key_same_symbol_written_differently(self):
+        # 클라이언트 normTex가 같다고 보는 표기는 서버에서도 한 항목 (따로 두면 기호 칩 중복·위치별 정의가 갈라짐)
+        for a, b in (("\\mathcal L", "\\mathcal{L}"), ("\\hat x", "\\hat{x}"), ("\\text{bal}", "\\mathrm{bal}"),
+                     ("\\mathcal{L}_{\\text{bal}}", "\\mathcal L_\\mathrm{bal}"), ("x_{\\alpha}", "x_\\alpha"),
+                     ("\\mathbf\\theta", "\\mathbf{\\theta}")):
+            self.assertEqual(g._tex_key(a), g._tex_key(b), (a, b))
+        self.assertNotEqual(g._tex_key("x_{ij}"), g._tex_key("x_ij"))
+        self.assertNotEqual(g._tex_key("\\hat{x}"), g._tex_key("x"))
+
+    def test_variant_spellings_merge_into_one_entry(self):
+        out = g.clean({
+            "terms": [{"t": "load-balancing loss", "a": ["LB loss"], "ko": "부하 균형 손실", "d": "뜻1", "q": "q1"},
+                      {"t": "Load balancing  loss", "a": ["LBL", "lb-loss"], "ko": "부하 균형 손실", "d": "뜻2", "q": "q2"}],
+            "symbols": [{"tex": "\\mathcal{L}", "d": "전체 손실", "q": "a"}, {"tex": "\\mathcal L", "d": "섹션 4의 손실", "q": "b"},
+                        {"tex": "\\hat x", "d": "예측", "q": ""}, {"tex": "\\hat{x}", "d": "예측", "q": ""}],
+        })
+        self.assertEqual(len(out["terms"]), 1)
+        self.assertEqual([d["d"] for d in out["terms"][0]["defs"]], ["뜻1", "뜻2"])
+        self.assertEqual([s["tex"] for s in out["symbols"]], ["\\mathcal{L}", "\\hat x"])
+        self.assertEqual([d["d"] for d in out["symbols"][0]["defs"]], ["전체 손실", "섹션 4의 손실"])
+        self.assertEqual(len(out["symbols"][1]["defs"]), 1)
+        # 약어가 용어 자신과 하이픈·띄어쓰기만 다르면 빼기
+        out = g.clean({"terms": [{"t": "k-NN", "a": ["k NN", "KNN"], "ko": "최근접 이웃", "d": "뜻"}]})
+        self.assertEqual(out["terms"][0]["a"], ["KNN"])
+
     def test_defs_capped(self):
         out = g.clean({"symbols": [{"tex": "x", "d": f"뜻 {i}", "q": str(i)} for i in range(10)]})
         self.assertEqual(len(out["symbols"][0]["defs"]), g.MAX_DEFS)

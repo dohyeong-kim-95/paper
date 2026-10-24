@@ -34,13 +34,26 @@ def _s(v, n: int) -> str:
     return re.sub(r"\s+", " ", v).strip()[:n] if isinstance(v, str) else ""
 
 
+_TEXT_CMD = re.compile(r"\\(?:mathrm|text|textrm|textit|textbf|textsf|texttt|textnormal|operatorname|mathit|mathsf|mathtt|mbox)(?![a-zA-Z])")
+_WRAP_CMD = r"mathcal|mathbf|mathbb|mathfrak|mathscr|boldsymbol|bm|mathbfit|hat|tilde|bar|vec|dot|ddot|widehat|widetilde|overline|check|breve"
+_WRAP_BARE = re.compile(r"\\(" + _WRAP_CMD + r")(?![a-zA-Z])\s*(\\[a-zA-Z]+|[^\s{}\\_^])")
+
+
+def _term_key(t: str) -> str:
+    # 클라이언트 normTerm과 같게: 대소문자·하이픈·띄어쓰기 차이 무시 ('load-balancing loss' = 'load balancing loss')
+    return re.sub(r"[\s\-\u2010-\u2015]+", " ", t.lower()).strip()
+
+
 def _tex_key(tex: str) -> str:
-    # 같은 기호 묶기용 (공백·\displaystyle·한 글자 중괄호 차이 무시). 정밀한 비교는 클라이언트 normTex
+    # 같은 기호 묶기용 (공백·\displaystyle·한 글자 중괄호 차이 무시, \mathcal L = \mathcal{L}, \mathrm{bal} = \text{bal}).
+    # 정밀한 비교는 클라이언트 normTex (클라이언트도 normTex가 같은 항목을 한 번 더 합침)
     s = re.sub(r"\\(displaystyle|textstyle|scriptstyle)(?![a-zA-Z])", "", tex.strip().strip("$"))
+    s = _TEXT_CMD.sub(r"\\text", s)
+    s = _WRAP_BARE.sub(r"\\\1{\2}", s)
     s = re.sub(r"\s+", "", s)
     prev = None
     while prev != s:
-        prev, s = s, re.sub(r"([_^])\{([^{}\\])\}", r"\1\2", s)
+        prev, s = s, re.sub(r"([_^])\{([^{}\\]|\\[a-zA-Z]+(?:\{[^{}]*\})?)\}", r"\1\2", s)
     return s
 
 
@@ -70,7 +83,7 @@ def clean(data) -> dict:
         t, ko, defs = _s(it.get("t"), 80), _s(it.get("ko"), 80), _defs(it)
         if not t or not defs:
             continue
-        key = t.lower()
+        key = _term_key(t)
         if key in terms:
             _add_defs(terms[key], defs)
             continue
@@ -80,7 +93,7 @@ def clean(data) -> dict:
         aliases = []
         for a in [raw_a] if isinstance(raw_a, str) else raw_a if isinstance(raw_a, list) else []:
             a = _s(a, 40)
-            if a and a.lower() != key and a.lower() not in (x.lower() for x in aliases):
+            if a and _term_key(a) != key and _term_key(a) not in (_term_key(x) for x in aliases):
                 aliases.append(a)
         terms[key] = {"t": t, "a": aliases[:3], "ko": ko, "defs": defs[:MAX_DEFS]}
     symbols: dict[str, dict] = {}

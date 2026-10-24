@@ -34,7 +34,9 @@ for (const e of [...GLOSSARY.terms, ...GLOSSARY.symbols]) {
 }
 const PAINTED = ["mixture of experts", "FLOPs", "mixture of experts", "Knowledge distillation", "router", "FLOPs", "router", "AdamW"];
 
-async function newPage(browser, { init, viewport } = {}) {
+const fulfillGlossary = r => r.fulfill({ status: 200, body: JSON.stringify(GLOSSARY), contentType: "application/json" });
+// glossary: (route, n번째 요청) => fulfill — 실패·지연 흉내
+async function newPage(browser, { init, viewport, glossary } = {}) {
   const ctx = await browser.newContext({ viewport: viewport || { width: 412, height: 800 }, serviceWorkers: "block" });
   await ctx.route(u => !u.href.startsWith(BASE), r => {
     if (r.request().resourceType() !== "image") return r.fulfill({ status: 200, body: "", contentType: "text/plain" });
@@ -43,7 +45,7 @@ async function newPage(browser, { init, viewport } = {}) {
   const hits = { glossary: 0 };
   await ctx.route(`${BASE}/api/**`, r => {
     const url = r.request().url();
-    if (url.includes("/api/glossary/")) { hits.glossary++; return r.fulfill({ status: 200, body: JSON.stringify(GLOSSARY), contentType: "application/json" }); }
+    if (url.includes("/api/glossary/")) { hits.glossary++; return glossary ? glossary(r, hits.glossary) : fulfillGlossary(r); }
     if (r.request().method() === "GET") return r.fulfill({ status: 404, body: '{"detail":"test"}', contentType: "application/json" });
     if (url.includes("/api/ask")) return r.fulfill({ status: 200, body: "답", contentType: "text/plain; charset=utf-8" });
     return r.continue();
@@ -229,6 +231,88 @@ test("루비 병기: 설정을 켜면 밑줄 친 용어 위에 한국어 (색인
   assert.deepEqual(r.off, { n: 0, same: true, html: true });
 });
 
+const openList = async page => {
+  await page.click("#bar-more");
+  await page.click(".pr-menu-item:has-text('용어')");
+  await until(page, () => document.querySelector(".gl-list-peek .gl-item"));
+};
+
+test("루비 병기: '용어' 목록의 스위치로 켜고 끔 (pr:glossary:ruby, 다음에 열 때도), 위의 한국어(rt)를 눌러도 뜻 peek", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  await openList(page);
+  assert.equal(await page.isChecked(".gl-list-peek .gl-ruby-sw"), false);
+  await page.evaluate(() => { window.__dc = 0; document.addEventListener("paper:dom-changed", () => window.__dc++); });
+  await page.click(".gl-list-peek .gl-opt");
+  await until(page, n => document.querySelectorAll("#paper ruby.gl-ruby").length === n, 8);
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(() => PaperStore.get("glossary:ruby")), true);
+  assert.ok(await page.evaluate(() => window.__dc) <= 2, "감싸기마다가 아니라 몰아서 paper:dom-changed");
+  await page.keyboard.press("Escape");
+
+  await page.reload();
+  await page.waitForFunction(() => document.querySelectorAll("#paper ruby.gl-ruby").length === 8, null, { timeout: 8000 });
+  const p = await page.evaluate(() => {
+    const rt = [...document.querySelectorAll("#paper ruby.gl-ruby > rt")].find(x => x.textContent === "라우터");
+    window.scrollBy(0, rt.getBoundingClientRect().top - 300);
+    const b = rt.getBoundingClientRect();
+    return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+  });
+  await page.mouse.click(p.x, p.y);
+  await until(page, () => document.querySelector(".gl-term-peek"));
+  assert.equal((await peek(page)).title, "router");
+  await page.keyboard.press("Escape");
+  await until(page, () => !document.querySelector(".pr-peek"));
+
+  await openList(page);
+  assert.equal(await page.isChecked(".gl-list-peek .gl-ruby-sw"), true);
+  await page.click(".gl-list-peek .gl-opt");
+  await until(page, () => !document.querySelector("#paper ruby, #paper rt"));
+  assert.equal(await page.evaluate(() => PaperStore.get("glossary:ruby")), false);
+  assert.deepEqual(page.errors, []);
+});
+
+test("루비: 스위치를 쓴 적 없으면 pr:reading-settings.ruby를 따름, 글자 선택 중엔 감싸기를 미루되 PaperApp.idle 줄은 막지 않음", async browser => {
+  let release;
+  const gate = new Promise(r => { release = r; });
+  const page = await newPage(browser, {
+    init: () => localStorage.setItem("pr:reading-settings", JSON.stringify({ ruby: true })),
+    glossary: async r => { await gate; return fulfillGlossary(r); },
+  });
+  await page.goto(PAPER);
+  await page.waitForFunction(() => window.PaperApp && document.readyState === "complete");
+  await page.evaluate(() => {
+    const s = getSelection(), r = document.createRange();
+    r.selectNodeContents(document.getElementById("S1.p1"));
+    s.removeAllRanges();
+    s.addRange(r);
+  });
+  release();
+  await page.waitForFunction(() => CSS.highlights.has("gl-term"), null, { timeout: 8000 });
+  const r = await page.evaluate(async () => {
+    const ran = await Promise.race([PaperApp.idle(() => "ran"), new Promise(r => setTimeout(() => r("blocked"), 2500))]);
+    return { ran, rubies: document.querySelectorAll("#paper ruby.gl-ruby").length, sel: !getSelection().isCollapsed };
+  });
+  assert.deepEqual(r, { ran: "ran", rubies: 0, sel: true });
+  await page.evaluate(() => getSelection().removeAllRanges());
+  await page.waitForFunction(() => document.querySelectorAll("#paper ruby.gl-ruby").length === 8, null, { timeout: 5000 });
+  assert.deepEqual(page.errors, []);
+});
+
+test("상태 칩: 실패 뒤 '다시'가 400ms 안에 성공해도 '용어 ✕ 다시' 칩이 남지 않음", async browser => {
+  const page = await newPage(browser, {
+    glossary: (r, n) => (n === 1 ? r.fulfill({ status: 502, body: '{"detail":"잘림"}', contentType: "application/json" }) : fulfillGlossary(r)),
+  });
+  await page.goto(PAPER);
+  await page.waitForFunction(() => document.querySelector(".pr-status[data-key=glossary][data-state=error] button"), null, { timeout: 8000 });
+  await page.click(".pr-status[data-key=glossary] button");
+  await page.waitForFunction(() => CSS.highlights.has("gl-term"), null, { timeout: 8000 });
+  assert.equal(await page.evaluate(() => document.querySelector(".pr-status[data-key=glossary][data-state=error]")), null);
+  await page.waitForFunction(() => !document.querySelector(".pr-status[data-key=glossary]"), null, { timeout: 5000 });
+  assert.equal(page.hits.glossary, 2);
+  assert.deepEqual(page.errors, []);
+});
+
 test("'용어' 목록: ⋯ 메뉴에서 열고, 영어·한국어로 검색, 항목을 누르면 뜻 peek가 위에", async browser => {
   const page = await newPage(browser);
   await open(page);
@@ -263,6 +347,29 @@ test("CSS Highlight API가 없으면 밑줄 없이 (본문 그대로), 목록은
   await page.click("#bar-more");
   await page.click(".pr-menu-item:has-text('용어')");
   await until(page, () => document.querySelectorAll(".gl-list-peek .gl-item").length === 9);
+  assert.deepEqual(page.errors, []);
+});
+
+test("Highlight API가 없어도 루비로 감싼 용어는 탭하면 뜻 peek", async browser => {
+  const page = await newPage(browser, {
+    init: () => {
+      try { Object.defineProperty(CSS, "highlights", { value: undefined }); } catch { /* 무시 */ }
+      localStorage.setItem("pr:glossary:ruby", "true");
+    },
+  });
+  await page.goto(PAPER);
+  await page.waitForFunction(() => document.querySelectorAll("#paper ruby.gl-ruby").length === 8, null, { timeout: 8000 });
+  const p = await page.evaluate(() => {
+    const rb = [...document.querySelectorAll("#paper ruby.gl-ruby")].find(x => x.firstChild.textContent === "Knowledge distillation");
+    window.scrollBy(0, rb.getBoundingClientRect().top - 300);
+    const g = document.createRange();
+    g.selectNodeContents(rb.firstChild);
+    const b = g.getClientRects()[0];
+    return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+  });
+  await page.mouse.click(p.x, p.y);
+  await until(page, () => document.querySelector(".gl-term-peek"));
+  assert.match((await peek(page)).text, /지식 증류/);
   assert.deepEqual(page.errors, []);
 });
 
