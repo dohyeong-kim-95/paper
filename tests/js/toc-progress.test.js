@@ -142,3 +142,30 @@ test("wordCount: 공백 기준 (수식 $…$는 한 덩어리)", () => {
   assert.equal(T.levelNum("h3"), 3);
   assert.equal(T.levelNum("x"), 2);
 });
+
+test("resumeLabel: 한 줄에 들어가는 첫 문구 (제목 → §번호 → 진행률 → '이어 읽기')", () => {
+  const all = () => true, upTo = n => s => s.length <= n;
+  assert.equal(T.resumeLabel({ title: "2 Method", tag: "2", pct: 37.4 }, all), "이어 읽기 · 2 Method");
+  assert.equal(T.resumeLabel({ title: "2.1 Training objective", tag: "2.1", pct: 37.4 }, upTo(12)), "이어 읽기 · §2.1");
+  // 번호가 없는 섹션(참고문헌)·부록 이름표는 §로 쓰지 않고 진행률로
+  assert.equal(T.resumeLabel({ title: "References", tag: "", pct: 91.6 }, upTo(11)), "이어 읽기 · 92%");
+  assert.equal(T.resumeLabel({ title: "Appendix A Additional results", tag: "Appendix A", pct: 80 }, upTo(12)), "이어 읽기 · 80%");
+  assert.equal(T.resumeLabel({ title: "A.1 More", tag: "A.1", pct: 80 }, upTo(12)), "이어 읽기 · §A.1");
+  assert.equal(T.resumeLabel({ title: "", tag: "", pct: 50 }, all), "이어 읽기 · 50%");
+  assert.equal(T.resumeLabel({ title: "Long title", tag: "3", pct: 50 }, () => false), "이어 읽기");
+  assert.equal(T.resumeLabel({ title: "x" }), "이어 읽기 · x");
+});
+
+test("boxAtLine: 기준선에 걸친(아래 첫) 보이는 문단, 숨은 문단(null)은 건너뜀, 다 위면 [n, null]", () => {
+  // 문단 0..4, 높이 100씩. 1과 3은 숨음 (번역 모드 원문·찾기 정리)
+  const boxes = [{ top: 0, bottom: 100 }, null, { top: 100, bottom: 200 }, null, { top: 200, bottom: 300 }];
+  const at = y => T.boxAtLine(boxes.length, i => boxes[i], y)[0];
+  assert.deepEqual([at(-5), at(50), at(100), at(150), at(250), at(300), at(999)], [0, 0, 2, 2, 4, 5, 5]);
+  assert.equal(T.boxAtLine(boxes.length, i => boxes[i], 999)[1], null);
+  // 모두 숨음 / 빈 목록
+  assert.deepEqual(T.boxAtLine(3, () => null, 10), [3, null]);
+  assert.deepEqual(T.boxAtLine(0, () => null, 10), [0, null]);
+  // 앞쪽이 길게 숨어 있어도 (찾기 정리)
+  const many = Array.from({ length: 50 }, (_, i) => (i === 40 ? { top: 0, bottom: 20 } : i === 45 ? { top: 20, bottom: 40 } : null));
+  assert.deepEqual([10, 30, 50].map(y => T.boxAtLine(50, i => many[i], y)[0]), [40, 45, 50]);
+});
