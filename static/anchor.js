@@ -23,23 +23,25 @@
   // 정규화 문자열 + (정규화 위치 → 원문 위치) 표. 소문자·따옴표·대시 통일, 공백 하나로,
   // 구두점 앞/여는 괄호 뒤 공백 제거 ("width $x$ ." == "width $x$.")
   function normMap(text) {
-    let norm = "", pendingSpace = -1;
-    const map = [];
+    // 선형 시간: norm[norm.length-1]을 읽으면 V8이 cons-string을 매번 평탄화해 O(n^2)이 됨 → 마지막 글자를 따로 추적
+    const parts = [], map = [];
+    let pendingSpace = -1, last = "";
     for (let i = 0; i < text.length; i++) {
       const ch = text[i];
       if (/\s/.test(ch)) { if (pendingSpace < 0) pendingSpace = i; continue; }
       if (INVISIBLE.test(ch)) continue;
       const n = normChar(ch);
-      if (pendingSpace >= 0 && norm && !NO_SPACE_BEFORE.test(n) && !NO_SPACE_AFTER.test(norm[norm.length - 1])) {
-        norm += " ";
+      if (pendingSpace >= 0 && last && !NO_SPACE_BEFORE.test(n) && !NO_SPACE_AFTER.test(last)) {
+        parts.push(" ");
         map.push(pendingSpace);
       }
       pendingSpace = -1;
-      norm += n;
+      parts.push(n);
+      last = n[n.length - 1];
       for (let k = 0; k < n.length; k++) map.push(i);
     }
     map.push(text.length);
-    return { norm, map };
+    return { norm: parts.join(""), map };
   }
   const normalize = s => normMap(String(s ?? "")).norm;
 

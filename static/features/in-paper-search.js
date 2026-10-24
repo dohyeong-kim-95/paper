@@ -230,8 +230,19 @@
     if (!l.length) return;
     cur = ((i % l.length) + l.length) % l.length;
     A.paint("ps-current", [l[cur]], { priority: 50 });
+    if (mode === "text" && onScreen(l[cur])) return; // 이미 찾기 줄 아래·키보드 위에 보이면 화면을 움직이지 않음
     jumps++;
     PaperNav.jumpTo(l[cur], { back: false, flash: mode === "ai" });
+  }
+  // 결과 전체가 찾기 줄 아래와 보이는 아래끝(키보드 위) 사이에 그려져 있는지. 숨긴 결과(그려진 상자 없음)는 false → jumpTo가 드러냄
+  function onScreen(h) {
+    const r = A.rangeAt(h.start, h.end);
+    const rs = r ? r.getClientRects() : [];
+    if (!rs.length) return false;
+    const top = document.getElementById("top-stack")?.getBoundingClientRect().bottom || 0;
+    const vv = window.visualViewport;
+    const bottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+    return rs[0].top >= top && rs[rs.length - 1].bottom <= bottom;
   }
   function step(d) {
     const l = list();
