@@ -4,7 +4,7 @@ mark.pa-mark-as-sentence { background: rgba(37, 99, 235, .2); color: inherit; }
 /* 읽는 문단: 글자 배치는 그대로 두고 옅은 바탕만 */
 .paper .ltx_para.as-reading { border-radius: 6px; background: rgba(37, 99, 235, .05); box-shadow: 0 0 0 6px rgba(37, 99, 235, .05); }
 
-/* 문단 첫 줄 왼쪽의 ▶ (본문 읽기 중에만) */
+/* 문단 첫 줄 왼쪽의 ▶ 여기부터 듣기 (재생기가 열려 있는 동안) */
 .paper .as-here { float: left; display: inline-flex; align-items: center; justify-content: center; width: 1.4em; height: 1.4em;
   margin: .1em .35em 0 0; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--card);
   color: var(--accent); font-size: .8em; line-height: 1; cursor: pointer; }

@@ -40,7 +40,8 @@
       if (!nl && m[0] === ".") {
         const word = text.slice(start, end).split(/\s+/).pop();
         const next = text.slice(end).trimStart();
-        if (ABBR.test(word) || /^[a-z]/.test(next)) continue; // 약어, 소문자로 이어지는 문장
+        // 약어, 소문자로 이어지는 영어 문장 (점 앞이 라틴 글자일 때만: 한국어 문장 뒤 'x의 제곱', 'softmax 함수는'은 새 문장)
+        if (ABBR.test(word) || (/[A-Za-z]\.$/.test(word) && /^[a-z]/.test(next))) continue;
       }
       push(start, nl ? m.index : end);
       start = end;
@@ -49,6 +50,9 @@
     return out;
   }
   const splitSentences = text => sentenceSpans(text).map(s => String(text).slice(s.start, s.end));
+  // 논문 글자(본문·.tr-ko): HTML에서 줄바꿈은 공백으로 보이고 LaTeXML은 원고의 줄바꿈을 그대로 둠 →
+  // 같은 길이의 공백으로 바꿔 나눔 (구간 위치는 원문 그대로). 줄바꿈을 문장 경계로 쓰는 것은 요약 대본만
+  const paperSpans = (text, max) => sentenceSpans(String(text ?? "").replace(/\s/g, " "), max);
 
   // LaTeX alttext → 읽을 말. 복잡한 식(분수·합·적분·행렬 …)이나 길면 '수식'(영어는 'formula')
   const GREEK = ["alpha", "beta", "gamma", "delta", "epsilon", "varepsilon", "zeta", "eta", "theta", "vartheta", "iota", "kappa", "lambda",
@@ -93,8 +97,10 @@
       .replace(/⟦\d+⟧/g, " ")
       .replace(/https?:\/\/\S+?(?=[.,;:!?)]?(?:\s|$))/g, ko ? " 링크 " : " link ")
       .replace(/\[\d+(?:\s*[,–-]\s*\d+)*\]/g, " ")
+      .replace(/[([]\s*(?:[,;]\s*)*[)\]]/g, " ") // 인용 연도·번호를 뺀 뒤 남은 빈 괄호: 'Smith et al. () show'
       .replace(/\s+/g, " ")
       .replace(/\s+([.,;:!?)])/g, "$1")
+      .replace(/(^|[^.])\.\.(?!\.)/g, "$1.") // 'et al. ().' → 'et al..' → 'et al.' (말줄임표 ...는 그대로)
       .trim();
   }
 
@@ -115,7 +121,7 @@
   // 화면 위 가장자리(top) 아래로 걸쳐 보이는 첫 사각형의 번호, 없으면 -1
   const firstBelow = (rects, top) => rects.findIndex(r => r && r.height > 0 && r.bottom > top + 4);
 
-  const api = { RATES, MATH, sentenceSpans, splitSentences, mathSpeech, speechText, stripMarkdown, nextRate, rateLabel, firstBelow };
+  const api = { RATES, MATH, sentenceSpans, splitSentences, paperSpans, mathSpeech, speechText, stripMarkdown, nextRate, rateLabel, firstBelow };
   if (typeof module !== "undefined") module.exports = api;
   if (typeof document === "undefined") return;
   if (document.body.dataset.page !== "paper") return;
@@ -139,8 +145,14 @@
   const UNIT_OUT = "figure, .ltx_bibliography, .ltx_note_outer, .pr-ui, .tr-ko, table.ltx_tabular, .ltx_listing, .ltx_authors";
   const units = () => [...paperEl.querySelectorAll(UNIT_SEL)].filter(el =>
     !el.closest(UNIT_OUT) && !(el.matches(".ltx_p") && el.closest("table.ltx_equation, table.ltx_equationgroup")));
-  const EN_SKIP = ".pr-ui, .tr-ko, .ltx_note_outer, .ltx_note_mark, .ltx_bibliography, .ltx_tag_equation, cite, script, style, button, noscript, template";
-  const KO_SKIP = ".ltx_note_outer, .ltx_note_mark, cite, script, style, button";
+  const EN_SKIP = ".pr-ui, .tr-ko, .ltx_note_outer, .ltx_note_mark, .ltx_bibliography, .ltx_tag_equation, script, style, button, noscript, template";
+  // 번역문 안: section-translate가 한국어 문장을 누르면 끼워 넣는 영어 한 줄(.tr-en)과 다른 언어 부분은 읽지 않음
+  const KO_SKIP = ".pr-ui, .tr-en, [lang]:not([lang|='ko']), .ltx_note_outer, .ltx_note_mark, script, style, button";
+  // 인용: 괄호·번호 인용([1, 2], (Smith et al., 2020))은 건너뜀. 문장 주어인 저자 인용(\citet: 'Smith et al. (2020) show')은
+  // 저자 이름만 읽고 연도·번호 링크는 뺌 (남은 빈 괄호는 speechText가 지움)
+  const NUM_REF = /^\s*\d[\d\s,–-]*[a-z]?\s*$/;
+  const skipCite = n => (n.localName === "cite" ? /^\s*[[(]/.test(n.textContent)
+    : n.localName === "a" && NUM_REF.test(n.textContent) && !!n.parentElement && !!n.parentElement.closest("cite"));
 
   // 요소의 글자 + 위치 표 (수식은 MATH 한 글자). 문장 구간 → Range로 되돌릴 때 사용
   function flatten(root, skipSel) {
@@ -152,7 +164,7 @@
           if (n.data) { segs.push({ node: n, start: text.length, end: text.length + n.data.length }); text += n.data; }
         } else if (n.nodeType === 1) {
           if (n.localName === "math") { segs.push({ node: n, start: text.length, end: text.length + 1, math: true }); text += MATH; }
-          else if (!n.matches(skipSel)) visit(n);
+          else if (!n.matches(skipSel) && !skipCite(n)) visit(n);
         }
       }
     };
@@ -180,31 +192,48 @@
     }
     return null;
   }
-  // 단위 하나를 읽을 문장들로: {el, root, ko, lang, para, sents: [{speech, range}]}
+  // 단위 하나를 읽을 문장들로: {el, root, ko, lang, para, pairs, sents: [{speech, off} | {speech, range, pair}]}
+  // 영어 문장은 색인 오프셋으로 저장 (glossary의 wrap이나 <mark> 대체 칠하기가 글자 노드를 옮겨도 그대로; Range는 쓸 때 만듦).
+  // 번역문(.tr-ko)은 색인 밖이라 살아 있는 Range. section-translate의 문장 칸(.tr-s)이 있으면 칸마다 나누고 그 번호(쌍 번호)를 둠
   function prepUnit(el, want) {
     const ko = want === "ko" ? koOf(el) : null;
     const lang = ko || (want === "ko" && el.localName === "table") ? "ko-KR" : "en-US";
-    const unit = { el, root: ko || el, ko: !!ko, lang, para: el.closest(".ltx_para"), sents: [] };
+    const unit = { el, root: ko || el, ko: !!ko, lang, para: el.closest(".ltx_para"), pairs: 0, sents: [] };
     if (el.localName === "table") {
       const tag = (el.querySelector(".ltx_tag_equation")?.textContent || "").replace(/[()]/g, "").trim();
-      const r = document.createRange();
-      r.selectNodeContents(el);
-      unit.sents.push({ speech: `${lang === "ko-KR" ? "수식" : "Equation"} ${tag}`.trim(), range: r });
+      unit.sents.push({ speech: `${lang === "ko-KR" ? "수식" : "Equation"} ${tag}`.trim(), off: A.offsetsOfElement(el) });
       return unit;
     }
-    const { text, segs } = flatten(unit.root, ko ? KO_SKIP : EN_SKIP);
+    if (ko) {
+      const parts = [...ko.querySelectorAll(".tr-s")];
+      unit.pairs = parts.length;
+      if (parts.length) parts.forEach((sp, k) => addSents(unit, sp, KO_SKIP, Number.isInteger(Number(sp.dataset.i)) ? Number(sp.dataset.i) : k));
+      else addSents(unit, ko, KO_SKIP, null);
+      if (!unit.sents.length) return prepUnit(el, "en"); // 번역 칸이 비었으면(준비 중 등) 원문
+    } else addSents(unit, el, EN_SKIP, null);
+    return unit;
+  }
+  function addSents(unit, root, skip, pair) {
+    const { text, segs } = flatten(root, skip);
     const maths = segs.filter(s => s.math);
     let mi = 0;
-    for (const sp of sentenceSpans(text)) {
+    for (const sp of paperSpans(text)) {
       const raw = text.slice(sp.start, sp.end).replace(/\uE000/g, () => {
         while (mi < maths.length && maths[mi].start < sp.start) mi++;
         const m = maths[mi++];
-        return ` ${mathSpeech(m ? m.node.getAttribute("alttext") || m.node.textContent : "", lang)} `;
+        return ` ${mathSpeech(m ? m.node.getAttribute("alttext") || m.node.textContent : "", unit.lang)} `;
       });
-      const speech = speechText(raw, lang);
-      if (/[\p{L}\p{N}]/u.test(speech)) unit.sents.push({ speech, range: rangeIn(segs, sp.start, sp.end) });
+      const speech = speechText(raw, unit.lang);
+      if (!/[\p{L}\p{N}]/u.test(speech)) continue;
+      const range = rangeIn(segs, sp.start, sp.end);
+      unit.sents.push(unit.ko ? { speech, range, pair } : { speech, off: range ? A.offsetsOf(range) : null });
     }
-    return ko && !unit.sents.length ? prepUnit(el, "en") : unit; // 번역 칸이 비었으면(준비 중 등) 원문
+  }
+  // 문장의 지금 Range (영어: 오프셋에서 새로, 번역문: 저장한 Range가 살아 있으면)
+  function rangeOf(s) {
+    if (!s) return null;
+    if (s.off) return A.rangeAt(s.off.start, s.off.end);
+    return s.range && !s.range.collapsed && s.range.startContainer.isConnected ? s.range : null;
   }
 
   // ---------- 오디오 대본 (요약·비평) ----------
@@ -299,6 +328,7 @@
       st.u++;
       st.i = 0;
       if (st.u < st.list.length && loadUnit(1)) { speakNow(); return; }
+      st.u = Math.min(st.u, st.list.length - 1); // 끝: '문단 N/N' (N+1이 아니게)
     }
     st.playing = false;
     st.ended = true;
@@ -336,10 +366,10 @@
       st.last = { unit: key, i: st.i, at: Date.now() };
     }
     if (st.mode === "body" && st.unit) {
-      const s = st.unit.sents[st.i];
-      if (s && s.range && !s.range.collapsed) {
-        A.paint("as-sentence", [s.range], { priority: 30, raw: st.unit.ko });
-        follow(s.range);
+      const s = st.unit.sents[st.i], r = rangeOf(s);
+      if (r && !r.collapsed) {
+        follow(r); // 칠하기 전에 (<mark> 대체는 글자 노드를 옮김)
+        A.paint("as-sentence", [st.unit.ko ? r : s.off], { priority: 30, raw: st.unit.ko });
       } else A.clear("as-sentence");
       markPara();
     }
@@ -388,6 +418,8 @@
       if (st !== s) return;
       s.sents = splitSentences(text);
       s.loading = false;
+      // 받는 동안 화면이 꺼졌거나 다른 앱으로 갔으면 말하지 않음 (돌아와서 ▶로 첫 문장부터)
+      if (document.hidden) { s.playing = false; render(); return; }
       speakNow();
     }, e => {
       if (st !== s) return;
@@ -427,22 +459,22 @@
     if (!loadUnit(1)) { st.ended = true; render(); return; }
     lastTouch = 0;
     speakNow(); // 탭 안에서 바로 (iOS)
-    addHere(list);
   }
-  // 문단마다 ▶ (여기부터 듣기): 본문 읽기 중에만
-  function addHere(list) {
-    removeHere();
-    for (const el of list) {
+  // 문단마다 ▶ (여기부터 듣기): 재생기가 열려 있는 동안 (요약을 듣다가도 원하는 문단부터 읽기로)
+  // 본문 읽기 중이면 그 언어로, 아니면 번역 모드에서는 번역문, 원문 모드에서는 영어
+  const hereLang = () => (st && st.mode === "body" ? st.lang : trMode() !== "orig" ? "ko" : "en");
+  function addHere() {
+    if (hereBtns.length) return;
+    for (const el of units()) {
       if (!el.matches(".ltx_p")) continue;
       const b = h("button", { type: "button", class: "as-here", "aria-label": "여기부터 듣기", title: "여기부터 듣기", text: G.play });
-      b.addEventListener("click", () => startBody(el, st && st.mode === "body" ? st.lang : "en"));
+      b.addEventListener("click", () => startBody(el, hereLang()));
       A.insertUI(el, b, "beforebegin");
       hereBtns.push(b);
     }
   }
   function removeHere() { for (const b of hereBtns) b.remove(); hereBtns = []; }
   function clearBody() {
-    removeHere();
     A.clear("as-sentence");
     if (readingEl) readingEl.classList.remove("as-reading");
     readingEl = null;
@@ -452,6 +484,7 @@
     clearBody();
     closeScript();
     hidePop();
+    removeHere();
     st = null;
     const slot = UI.bottomSlot(OWNER);
     if (slot) slot.replaceChildren();
@@ -464,6 +497,7 @@
     const slot = UI.bottomSlot(OWNER);
     if (!slot) return;
     barBtn.setActive(true);
+    addHere();
     if (ui) return;
     const btn = (cls, label, text, onclick) => h("button", { type: "button", class: cls, "aria-label": label, title: label, text, onclick });
     const curText = h("span", { class: "as-cur-text" });
@@ -530,12 +564,15 @@
     clearTimeout(popTimer);
     if (ui) { ui.pop.hidden = true; ui.pop.target = null; }
   }
-  // 영어 원문 범위: 번역문이면 문장 수가 같을 때 같은 번호의 영어 문장, 아니면 단위 전체
+  // 영어 원문 범위: 번역문이면 같은 번호의 영어 문장 (문장 칸 .tr-s가 있으면 칸의 쌍 번호, 없으면 문장 번호),
+  // 개수가 맞지 않으면 단위 전체
   function enRange(t) {
     const u = t.unit;
-    if (!u.ko) return t.s.range ? t.s.range.cloneRange() : null;
+    if (!u.ko) return rangeOf(t.s);
     const en = prepUnit(u.el, "en");
-    if (en.sents.length === u.sents.length && en.sents[t.i] && en.sents[t.i].range) return en.sents[t.i].range;
+    const [k, n] = t.s.pair != null ? [t.s.pair, u.pairs] : [t.i, u.sents.length];
+    const r0 = en.sents.length === n ? rangeOf(en.sents[k]) : null;
+    if (r0 && !r0.collapsed) return r0;
     const r = document.createRange();
     r.selectNodeContents(u.el);
     return r;

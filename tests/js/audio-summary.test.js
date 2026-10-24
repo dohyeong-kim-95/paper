@@ -23,6 +23,21 @@ test("줄바꿈도 문장 경계, 빈 줄·앞뒤 공백은 버림", () => {
   assert.deepEqual(A.splitSentences(null), []);
 });
 
+test("paperSpans: 논문 글자 속 원고 줄바꿈은 공백 (문장 경계 아님), 구간은 원문 위치 그대로", () => {
+  const text = "The router computes gate scores\nfor every token in the batch.\n Smith et al. show that routing\nis stable. Done.";
+  const spans = A.paperSpans(text);
+  assert.deepEqual(spans.map(s => text.slice(s.start, s.end)),
+    ["The router computes gate scores\nfor every token in the batch.", "Smith et al. show that routing\nis stable.", "Done."]);
+  assert.equal(A.splitSentences("a line\nnext line").length, 2, "요약 대본(splitSentences)은 줄바꿈이 경계");
+  assert.deepEqual(A.paperSpans(""), []);
+});
+
+test("한국어 문장 뒤에 라틴 소문자로 시작하는 문장은 새 문장 (영어 소문자 이어짐 규칙은 영어 단어 뒤만)", () => {
+  assert.deepEqual(A.splitSentences("결과는 좋습니다. x의 제곱에 비례합니다."), ["결과는 좋습니다.", "x의 제곱에 비례합니다."]);
+  assert.equal(A.splitSentences("이 모델은 트랜스포머를 씁니다. softmax 함수는 확률을 줍니다.").length, 2);
+  assert.equal(A.splitSentences("It stops, etc. and then continues.").length, 1);
+});
+
 test("sentenceSpans: 구간이 원문 위치를 가리킴, 긴 문장은 max 이하로 쉼표·공백에서 나눔", () => {
   const text = "  Alpha beta.  Gamma delta? ";
   const spans = A.sentenceSpans(text);
@@ -62,6 +77,10 @@ test("speechText: 번역 자리표시자·URL·번호 인용 제거", () => {
   assert.equal(A.speechText("Code is at https://github.com/a/b. Done [1, 2]."), "Code is at link. Done.");
   assert.equal(A.speechText("결과 ⟦3⟧ 입니다 https://x.y/z", "ko-KR"), "결과 입니다 링크");
   assert.equal(A.speechText("two experts [1–3] ."), "two experts.");
+  // 저자 인용에서 연도 링크를 뺀 뒤 남은 빈 괄호
+  assert.equal(A.speechText("Smith et al. () show that routing is stable."), "Smith et al. show that routing is stable.");
+  assert.equal(A.speechText("This follows Smith et al. ()."), "This follows Smith et al.");
+  assert.equal(A.speechText("Wait... then (a) and f(x)."), "Wait... then (a) and f(x).");
 });
 
 test("stripMarkdown: 답변을 읽을 글로", () => {
