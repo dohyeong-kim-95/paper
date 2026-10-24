@@ -7,11 +7,13 @@
   const MARK_RE = /%%OV([QF])(\d+)%%/g;
   const CODE_RE = /^https?:\/\/(?:www\.)?(github|gitlab)\.com\/([\w.-]+)\/([\w.-]+)/i;
 
-  // '→ "인용"' 줄이면 인용문, 아니면 null (앞 목록 기호·강조·따옴표·닫는 따옴표 뒤 마침표는 뗌)
+  // '→ "인용"' 줄이면 인용문, 아니면 null (앞 목록 기호·강조, 닫는 따옴표 뒤 마침표는 뗌).
+  // 따옴표로 감싸지 않은 '→ 결과적으로 …' 같은 한국어 문장은 인용이 아님 (그대로 둠)
+  const QUOTE_LINE = /^\s*(?:[-*>]\s*)?(?:→|->)\s*[*_`]*["“'‘](.+?)["”'’][*_`]*[.。]?\s*$/;
   function quoteOf(line) {
-    const m = String(line ?? "").match(/^\s*(?:[-*>]\s*)?(?:→|->)\s*(.+?)\s*$/);
+    const m = String(line ?? "").match(QUOTE_LINE);
     if (!m) return null;
-    const q = m[1].replace(/^[*_`]+|[*_`]+$/g, "").replace(/^["“'‘]+/, "").replace(/["”'’]+[.。]?$/, "").trim();
+    const q = m[1].replace(/^[*_`]+|[*_`]+$/g, "").trim();
     return q || null;
   }
   const parseQuoteLines = text => String(text || "").split("\n")
@@ -32,8 +34,8 @@
     return { md: lines.join("\n").replace(/\n{3,}/g, "\n\n"), quotes, figs };
   }
 
-  // 스트리밍 중 보이는 글: 그림 토큰(쓰는 중인 것 포함)은 숨김
-  const streamView = text => String(text || "").replace(FIG_RE, "").replace(/\[\[[^\]\n]*$/, "");
+  // 스트리밍 중 보이는 글: 그림 토큰(쓰는 중인 것 포함)과 [오류] 꼬리는 숨김
+  const streamView = text => String(text || "").replace(ERROR_TAIL, "").replace(FIG_RE, "").replace(/\[\[[^\]\n]*$/, "");
 
   // '## 3줄 요약'의 첫 줄 (접힌 카드 미리보기·library gist). done이 아니면 끝나지 않은 마지막 줄은 아직 안 씀
   function gistOf(text, done = true) {
@@ -82,6 +84,26 @@
     return out;
   }
 
+  // arXiv comment → 게재 정보 한 구절: 키워드부터 ';' 또는 문장 끝까지.
+  // 문장 끝 = '. ' 뒤 대문자·숫자, 단 앞 낱말이 약어(Proc. Int. Conf. J. Trans.)면 계속. 'Unpublished'는 아님
+  const VENUE_RE = /\b(?:accepted|to appear|published|camera[- ]ready)\b/i;
+  function venueOf(comment) {
+    for (const clause of String(comment || "").split(";")) {
+      const at = clause.search(VENUE_RE);
+      if (at < 0) continue;
+      let s = clause.slice(at);
+      for (const m of s.matchAll(/\.\s+(?=[A-Z0-9])/g)) {
+        const word = (s.slice(0, m.index).match(/(\S+)$/) || [""])[0];
+        if (/^[A-Z][a-z]{0,4}$/.test(word)) continue; // 약어
+        s = s.slice(0, m.index);
+        break;
+      }
+      s = s.trim().replace(/\.$/, "").trim();
+      if (s) return s;
+    }
+    return "";
+  }
+
   // arXiv 메타 → 칩 [{label, href?, title?}]. openedId에 버전이 있고 최신이 아니면 알림
   function metaChips(meta, openedId = "") {
     if (!meta || !meta.version) return [];
@@ -98,13 +120,13 @@
     }
     if (meta.primary_category) chips.push({ label: meta.primary_category, title: (meta.categories || []).join(", ") || undefined });
     // arXiv comment 중 게재 정보만 ("Accepted at ICLR 2025" 등; "12 pages, 4 figures"는 뺌)
-    const venue = String(meta.comment || "").split(/[;.]\s*/).find(s => /accepted|to appear|published|camera[- ]ready/i.test(s));
-    if (venue) chips.push({ label: venue.trim().slice(0, 60), title: meta.comment });
+    const venue = venueOf(meta.comment);
+    if (venue) chips.push({ label: venue.slice(0, 60), title: meta.comment });
     if (meta.doi) chips.push({ label: "DOI", href: `https://doi.org/${meta.doi}`, title: meta.doi });
     return chips;
   }
 
-  const api = { quoteOf, parseQuoteLines, prepare, streamView, gistOf, sectionsOf, toMarkdown, codeLinks, metaChips };
+  const api = { quoteOf, parseQuoteLines, prepare, streamView, gistOf, sectionsOf, toMarkdown, codeLinks, venueOf, metaChips };
   if (typeof module !== "undefined") module.exports = api;
   if (typeof document === "undefined") return;
   if (document.body.dataset.page !== "paper") return;
@@ -123,17 +145,18 @@
   // 카드: 메타 칩 줄 + '한눈에 보기 ▸' (접힘: 3줄 요약 첫 줄 미리보기)
   const toggle = h("button", { type: "button", class: "ov-toggle", "aria-expanded": "false" },
     h("span", { text: "한눈에 보기" }), h("span", { class: "ov-caret", "aria-hidden": "true", text: "▸" }));
-  const teaser = h("p", { class: "ov-teaser", hidden: true });
+  // 미리보기 줄은 처음부터 자리를 잡아 둠 (나중에 글이 와도 아래 본문이 밀리지 않게: iOS는 스크롤 앵커링 없음)
+  const teaser = h("p", { class: "ov-teaser ov-pending", text: "요약 준비 중…" });
   const textEl = h("div", { class: "ov-text" });
   const methodBody = h("div", { class: "ov-text" });
   const methodEl = h("div", { class: "ov-method", hidden: true },
     h("div", { class: "ov-method-head" }, h("b", { text: "방법론 자세히" }),
-      UI.feedback("overview", "overview.method.v1", { label: "방법론 자세히" })),
+      UI.feedback("overview", `${PaperApp.baseId}:overview.method.v1`, { label: "방법론 자세히" })),
     methodBody);
   const methodBtn = h("button", { type: "button", class: "ov-btn", "aria-expanded": "false", text: "방법론 자세히 ▸" });
   const copyBtn = h("button", { type: "button", class: "ov-btn", text: "마크다운 복사" });
   const bodyEl = h("div", { class: "ov-body", hidden: true }, textEl, methodEl,
-    h("div", { class: "ov-foot" }, methodBtn, copyBtn, UI.feedback("overview", "overview.v1", { label: "한눈에 보기" })));
+    h("div", { class: "ov-foot" }, methodBtn, copyBtn, UI.feedback("overview", `${PaperApp.baseId}:overview.v1`, { label: "한눈에 보기" })));
   const card = h("section", { class: "ov-card", "aria-label": "한눈에 보기" }, toggle, teaser, bodyEl);
   const metaRow = h("div", { class: "ov-meta" });
   const wrap = h("div", { class: "ov" }, metaRow, card);
@@ -202,6 +225,8 @@
     if (!orig || orig.localName !== "figure" || !paper.contains(orig) || orig.closest(".pr-ui")) return null;
     const c = UI.cloneClean(orig);
     c.querySelectorAll("figure, figcaption").forEach(f => f.replaceWith(retag(f)));
+    // 캡션 속 인용·참조 링크는 글자로만 (탭은 상자 전체 = 그림 열기 하나; 링크가 살아 있으면 두 번 점프)
+    c.querySelectorAll("a").forEach(a => { const s = h("span", { class: "ov-a" }); s.append(...a.childNodes); a.replaceWith(s); });
     const box = h("div", { class: "ov-fig", role: "button", tabindex: "0", "aria-label": "그림 크게 보기" }, retag(c));
     const open = () => {
       const img = orig.querySelector("img");
@@ -255,18 +280,20 @@
     el.querySelectorAll("a[href]").forEach(a => {
       if (!a.getAttribute("href").startsWith("#")) { a.target = "_blank"; a.rel = "noopener"; }
     });
-    el.dataset.plain = window.marked ? "" : "1"; // CDN이 늦으면 load 때 다시
+    el.dataset.plain = window.marked && window.DOMPurify ? "" : "1"; // CDN(render.js와 같은 조건)이 늦으면 load 때 다시
     el.dataset.final = "1";
   }
+  // 대기 중인 rAF 그리기(스트리밍 청크)를 취소한 뒤 바꿈: 안 그러면 한 프레임 뒤 부분 글이 오류 상자를 덮어씀
+  const replaceNow = (el, ...nodes) => { drawNow(el, ""); el.replaceChildren(...nodes); };
   function showError(el, msg, retry) {
     el.dataset.final = "";
-    el.replaceChildren(h("p", { class: "ov-error" }, h("span", { text: `만들지 못했습니다 (${msg}) ` }),
+    replaceNow(el, h("p", { class: "ov-error" }, h("span", { text: `만들지 못했습니다 (${msg}) ` }),
       h("button", { type: "button", class: "ov-btn", text: "다시", onclick: retry })));
   }
   function showLoading(el, j, label) {
     el.dataset.final = "";
     if (j.text) draw(el, streamView(j.text));
-    else el.replaceChildren(h("p", { class: "ov-loading", text: `${label} 만드는 중…` }));
+    else replaceNow(el, h("p", { class: "ov-loading", text: `${label} 만드는 중…` }));
   }
 
   // ---------- 한눈에 보기 ----------
@@ -280,10 +307,18 @@
     if (state === "error" || statusOn) UI.status("overview", "요약", state, { onRetry: () => loadOverview(true) });
     statusOn = state === "error";
   }
+  function setTeaser(text, pending) {
+    teaser.textContent = text;
+    teaser.classList.toggle("ov-pending", pending);
+  }
   function updateTeaser(j) {
     const g = gistOf(j.text, j.done);
-    if (g) teaser.textContent = g;
-    teaser.hidden = expanded || !teaser.textContent;
+    if (g) setTeaser(g, false);
+    else if (j.error) setTeaser("요약을 만들지 못했습니다 · 펼쳐서 다시 시도", true);
+    else if (j.done) setTeaser("펼쳐서 요약 보기", true);
+    else if (!teaser.classList.contains("ov-pending")) return; // 이미 받은 미리보기는 유지
+    else setTeaser("요약 준비 중…", true);
+    teaser.hidden = expanded;
   }
   const ov = makeJob(URLS.overview, {
     text: j => { updateTeaser(j); if (expanded) draw(textEl, streamView(j.text)); },
@@ -294,11 +329,12 @@
       const gist = gistOf(j.text);
       if (gist) PaperApp.feature("library")?.add?.({ id: PaperApp.baseId, gist });
     },
-    fail: j => { setStatus("error"); if (expanded) showError(textEl, j.error, () => loadOverview(true)); },
+    fail: j => { setStatus("error"); updateTeaser(j); if (expanded) showError(textEl, j.error, () => loadOverview(true)); },
   });
   function loadOverview(retry = false) {
     if (!ov.promise || (retry && ov.error)) setStatus("loading");
     const p = ov.start(retry);
+    if (!ov.done && !ov.error) updateTeaser(ov);
     if (expanded && !ov.done && !ov.error) showLoading(textEl, ov, "요약");
     return p;
   }
@@ -307,7 +343,7 @@
     toggle.setAttribute("aria-expanded", String(on));
     card.classList.toggle("open", on);
     bodyEl.hidden = !on;
-    teaser.hidden = on || !teaser.textContent;
+    teaser.hidden = on;
     if (!on) return;
     if (ov.done) { if (!textEl.dataset.final) finalize(textEl, ov.text); }
     else if (ov.error) showError(textEl, ov.error, () => loadOverview(true));

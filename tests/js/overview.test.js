@@ -1,6 +1,6 @@
 "use strict";
 const { test, assert, load } = require("./_runner");
-const { quoteOf, parseQuoteLines, prepare, streamView, gistOf, sectionsOf, toMarkdown, codeLinks, metaChips } =
+const { quoteOf, parseQuoteLines, prepare, streamView, gistOf, sectionsOf, toMarkdown, codeLinks, venueOf, metaChips } =
   load("static/features/overview.js");
 
 const SAMPLE = `## 3줄 요약
@@ -42,6 +42,15 @@ test("quoteOf: 목록 기호·강조·굽은 따옴표·->·닫는 따옴표 뒤
   assert.equal(quoteOf("결과 → 정확도 향상"), null);
   assert.equal(quoteOf('→ ""'), null);
   assert.equal(quoteOf(undefined), null);
+  // 따옴표 없는 → 줄은 한국어 문장 (인용 아님)
+  assert.equal(quoteOf("→ 결과적으로 계산량이 절반으로 줄어듭니다."), null);
+  assert.equal(quoteOf('→ "the model\'s output is \"sparse\""'), 'the model\'s output is "sparse"');
+});
+
+test("prepare: 따옴표 없는 → 줄은 지우지 않고 그대로", () => {
+  const { md, quotes } = prepare('### 결과는?\n정확도가 오릅니다.\n→ 결과적으로 …\n→ "exact quote here"', q => q === "exact quote here");
+  assert.deepEqual(quotes, ["exact quote here"]);
+  assert.equal(md, "### 결과는?\n정확도가 오릅니다.\n→ 결과적으로 …\n%%OVQ0%%");
 });
 
 test("prepare: 찾은 인용은 자리표시, 못 찾은 인용 줄은 삭제, 그림 토큰은 따로 떨어진 문단", () => {
@@ -63,6 +72,7 @@ test("streamView: 완성·작성 중인 그림 토큰을 숨김", () => {
   assert.equal(streamView("a\n[[fig:S2.F1]]\nb"), "a\n\nb");
   assert.equal(streamView("a\n[[fig:S2"), "a\n");
   assert.equal(streamView("링크 [x](y)"), "링크 [x](y)");
+  assert.equal(streamView("## 3줄 요약\n- 하나\n\n[오류] boom"), "## 3줄 요약\n- 하나");
 });
 
 test("gistOf: 3줄 요약 첫 줄 (강조 제거), 스트리밍 중엔 끝난 줄만", () => {
@@ -97,6 +107,18 @@ test("codeLinks: github/gitlab 저장소만, 정규화·중복 제거", () => {
     "https://example.com/github.com/a/b",
     "#S2",
   ]), ["https://github.com/example/sparse-moe", "https://gitlab.com/group/proj"]);
+});
+
+test("venueOf: 게재 구절만 (약어 마침표는 계속, Unpublished는 아님)", () => {
+  assert.equal(venueOf("Published in Proc. of ACL 2024"), "Published in Proc. of ACL 2024");
+  assert.equal(venueOf("Accepted to the 41st Int. Conf. on Machine Learning (ICML 2024)"),
+    "Accepted to the 41st Int. Conf. on Machine Learning (ICML 2024)");
+  assert.equal(venueOf("Unpublished draft; 10 pages"), "");
+  assert.equal(venueOf("12 pages, 4 figures. Accepted at ICLR 2025. Code: https://x.y"), "Accepted at ICLR 2025");
+  assert.equal(venueOf("Published as a conference paper at ICLR 2025"), "Published as a conference paper at ICLR 2025");
+  assert.equal(venueOf("To appear in J. Mach. Learn. Res.; 30 pages"), "To appear in J. Mach. Learn. Res");
+  assert.equal(venueOf("Camera-ready version for NeurIPS 2024. 9 pages"), "Camera-ready version for NeurIPS 2024");
+  assert.equal(venueOf(undefined), "");
 });
 
 test("metaChips: 버전·제출/수정일·분야·DOI, 옛 버전을 열었으면 최신 알림", () => {
