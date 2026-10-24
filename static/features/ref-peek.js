@@ -1,4 +1,4 @@
-// ref-peek: 수식·그림·표·섹션·정리·각주 참조를 그 자리에서 미리보기 (+ 언급한 곳 목록, 답변 속 참조 탭)
+// ref-peek: 수식·그림·표·섹션·정리·각주 참조를 그 자리에서 미리보기 (+ 언급한 곳 목록)
 (function () {
   "use strict";
 
@@ -33,93 +33,8 @@
     return k === "table" || k === "algorithm" ? "figure" : k;
   }
 
-  // 참조 이름 → 열쇠 낱말 (그림 3 = Figure 3 = fig:3)
-  const WORD = {
-    figure: "fig", figures: "fig", fig: "fig", figs: "fig", 그림: "fig",
-    table: "tab", tables: "tab", tab: "tab", 표: "tab",
-    algorithm: "alg", algorithms: "alg", alg: "alg", 알고리즘: "alg",
-    equation: "eq", equations: "eq", eq: "eq", eqs: "eq", 식: "eq", 수식: "eq",
-    section: "sec", sections: "sec", sec: "sec", secs: "sec", sect: "sec", appendix: "sec", app: "sec", 부록: "sec", 섹션: "sec",
-    theorem: "theorem", theorems: "theorem", thm: "theorem", 정리: "theorem",
-    lemma: "lemma", lemmas: "lemma", lem: "lemma", 보조정리: "lemma",
-    proposition: "proposition", propositions: "proposition", prop: "proposition", 명제: "proposition",
-    corollary: "corollary", corollaries: "corollary", cor: "corollary", 따름정리: "corollary",
-    definition: "definition", definitions: "definition", def: "definition", 정의: "definition",
-    assumption: "assumption", assumptions: "assumption", 가정: "assumption",
-    remark: "remark", remarks: "remark", conjecture: "conjecture", conjectures: "conjecture", claim: "claim", claims: "claim",
-  };
-  const wordOf = w => { const k = String(w).toLowerCase().replace(/\.$/, ""); return WORD[k] || k; };
-  const refKey = (word, n) => `${wordOf(word)}:${String(n).toLowerCase().replace(/\s+/g, "")}`;
-  const fold = s => String(s).normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
-
   // "Figure 1: " → "Figure 1", "§2" → "2"
   const cleanTag = s => String(s ?? "").replace(/\s+/g, " ").trim().replace(/^§\s*/, "").replace(/\s*[:.]$/, "").trim();
-
-  // 참고문헌 꼬리표·인용 링크 글자 → 열쇠. "[1]" → bib:1, "Shazeer et al. (2017)" → cite:shazeer:2017, cite:shazeer
-  // numeric: false면 숫자만 있는 글자(연도만 링크인 "2017" 등)는 버림
-  function bibKeys(text, numeric = true) {
-    const t = cleanTag(text);
-    let m = t.match(/^\[?(\d+)\]?$/);
-    if (m) return numeric ? [refKey("bib", m[1])] : [];
-    m = t.match(/^\[?\s*(\p{L}[\p{L}'’-]*(?:\s+[\p{L}'’-]+)*?)(?=\s+et\s+al|\s+and\s|\s*&|\s*,|\s*\(|\s+(?:19|20)\d{2}|\s*\]|$)/u);
-    if (!m) return [];
-    const s = fold(m[1].split(/\s+/).pop());
-    const y = t.match(/((?:19|20)\d{2})[a-z]?/);
-    return y ? [`cite:${s}:${y[1]}`, `cite:${s}`] : [`cite:${s}`];
-  }
-
-  // 대상의 꼬리표(.ltx_tag_*) 글자 → 열쇠. kind: equation | section | bibitem | 그 밖(figure·table·float·theorem)
-  function tagKeys(kind, text) {
-    const t = cleanTag(text);
-    if (!t) return [];
-    let m;
-    if (kind === "equation") return (m = t.match(/^\(?\s*([\w.]+?)\s*\)?$/)) ? [refKey("eq", m[1])] : [];
-    if (kind === "section") return (m = t.match(/^(?:(?:Appendix|Section|Chapter|Part)\s+)?([A-Z]|\d+)((?:\.\d+)*)$/i)) ? [refKey("sec", m[1] + m[2])] : [];
-    if (kind === "bibitem") return bibKeys(t);
-    return (m = t.match(/^([A-Za-z]+\.?)\s*([A-Z]?\d+(?:\.\d+)*[a-z]?)$/)) ? [refKey(m[1], m[2])] : [];
-  }
-
-  // 답변 글 속 참조 찾기: "Figure 3", "그림 3", "Table 2", "표 2", "Eq. (5)", "식 (5)", "Section 4.2", "4.2절", "§4",
-  // "Appendix A", "부록 A", "Theorem 1", "정리 1", "Algorithm 1", "[12]", "Shazeer et al." → [{start, end, keys}]
-  const B = "(?<![\\p{L}\\d])"; // 앞이 글자·숫자가 아님 (한국어 낱말 속 '표'·'식' 등 제외)
-  const NUM = "([A-Z]?\\d+(?:\\.\\d+)*)";
-  const THM = "[Tt]heorems?|[Tt]hm\\.|[Ll]emmas?|[Ll]em\\.|[Pp]ropositions?|[Pp]rop\\.|[Cc]orollar(?:y|ies)|[Cc]or\\.|[Dd]efinitions?|[Dd]ef\\.|[Aa]ssumptions?|[Rr]emarks?|[Cc]onjectures?|[Cc]laims?|보조정리|따름정리|정리|명제|정의|가정";
-  const SUR = "(\\p{Lu}[\\p{L}'’\\-]*)";
-  const withLetter = (w, n, l) => (l ? [refKey(w, n + l), refKey(w, n)] : [refKey(w, n)]);
-  const MENTIONS = [
-    [new RegExp(`${B}(?:[Ff]ig(?:ure)?s?\\.?|그림)\\s*${NUM}(?:\\s?\\(([a-z])\\)|([a-z])(?![A-Za-z]))?`, "gu"), m => withLetter("fig", m[1], m[2] || m[3])],
-    [new RegExp(`${B}(?:[Tt]ables?|[Tt]ab\\.|표)\\s*${NUM}`, "gu"), m => [refKey("tab", m[1])]],
-    [new RegExp(`${B}(?:[Aa]lgorithms?|[Aa]lg\\.|알고리즘)\\s*${NUM}`, "gu"), m => [refKey("alg", m[1])]],
-    [new RegExp(`${B}(?:[Ee]q(?:uation)?s?\\.?|수식|식)\\s*(?:\\(([A-Z]?\\d+(?:\\.\\d+)*[a-z]?)\\)|(\\d+(?:\\.\\d+)*)(?![A-Za-z\\d]))`, "gu"), m => [refKey("eq", m[1] || m[2])]],
-    [/\(([A-Z]?\d+(?:\.\d+)*[a-z]?)\)\s?(?:수식|식)/gu, m => [refKey("eq", m[1])]],
-    [new RegExp(`${B}(?:[Ss]ections?|[Ss]ecs?\\.|[Ss]ect\\.|섹션|§|[Aa]ppendix|[Aa]pp\\.|부록)\\s*([A-Z](?:\\.\\d+)*|\\d+(?:\\.\\d+)*)(?![A-Za-z\\d])`, "gu"), m => [refKey("sec", m[1])]],
-    [/(?<![\d.])(\d+(?:\.\d+)*)\s?절/gu, m => [refKey("sec", m[1])]],
-    [new RegExp(`${B}(${THM})\\s*(\\d+(?:\\.\\d+)*)`, "gu"), m => [refKey(m[1], m[2])]],
-    [new RegExp(`(?<![\\p{L}])${SUR}\\s+(?:et\\s+al\\.?|등)(?:,?\\s*\\(?((?:19|20)\\d{2})[a-z]?\\)?)?`, "gu"),
-      m => (m[2] ? [`cite:${fold(m[1])}:${m[2]}`, `cite:${fold(m[1])}`] : [`cite:${fold(m[1])}`])],
-    [new RegExp(`(?<![\\p{L}])${SUR}\\s*\\(((?:19|20)\\d{2})[a-z]?\\)`, "gu"), m => [`cite:${fold(m[1])}:${m[2]}`]],
-  ];
-  function findMentions(text) {
-    const s = String(text ?? ""), out = [];
-    for (const [re, keys] of MENTIONS) {
-      for (const m of s.matchAll(re)) out.push({ start: m.index, end: m.index + m[0].length, keys: keys(m) });
-    }
-    // [1], [1, 2], [3–5]: 숫자마다 따로. 0이 있으면 ([0, 1] 구간 등) 인용이 아님
-    for (const m of s.matchAll(/\[([\d\s,;–—-]{1,40})\]/g)) {
-      if (!/^\s*\d+(?:\s*[,;–—-]\s*\d+)*\s*$/.test(m[1])) continue;
-      const nums = [...m[1].matchAll(/\d+/g)];
-      if (nums.some(x => x[0].startsWith("0"))) continue;
-      for (const x of nums) {
-        const st = m.index + 1 + x.index;
-        out.push({ start: st, end: st + x[0].length, keys: [refKey("bib", x[0])] });
-      }
-    }
-    out.sort((a, b) => a.start - b.start || b.end - a.end);
-    const kept = [];
-    let last = -1;
-    for (const x of out) if (x.start >= last) { kept.push(x); last = x.end; }
-    return kept;
-  }
 
   // 문장 경계: '.' 뒤에 공백 + 소문자가 아닌 글자, 약어(Eq. Fig. et al. e.g. …) 뒤는 아님, $수식$ 안은 아님
   const ABBR = /^(?:[A-Za-z]|eqs?|figs?|secs?|sects?|tabs?|refs?|al|e\.g|i\.e|cf|vs|etc|resp|approx|nos?|thms?|lems?|defs?|algs?|apps?|props?|cors?|chs?|pp|vol|viz|ex|ca|mr|ms|dr|prof|jr|sr|inc|ltd|corp)$/i;
@@ -160,7 +75,10 @@
     return { start: s, end: e, cutStart: s > full.start, cutEnd: e < full.end };
   }
 
-  // peek 제목: 대상 꼬리표 우선 (링크 글자는 "2"처럼 번호뿐일 때가 많음), 없으면 링크 title의 첫 부분
+  // peek 제목: 대상 꼬리표 우선 (링크 글자는 "2"처럼 번호뿐일 때가 많음). 꼬리표가 없으면 (번호 없는 figure*,
+  // 캡션 없는 float) 링크 title의 첫 부분 ("In 2 Method ‣ …"처럼 위치만 말하는 title은 빼고), 그다음 링크 글자
+  // (번호뿐이면 noun을 붙여 "그림 2"). 수식은 "수식" (수식 링크의 title은 언제나 "In …")
+  const NUMBERISH = /^(?:[A-Z]|\d+)(?:\.\d+)*(?:\s?\(?[a-z]\)?)?$/;
   function titleFrom(o = {}) {
     const tag = cleanTag(o.tag), sub = cleanTag(o.sub);
     if (o.kind === "equation") return tag ? `식 ${/^\(.*\)$/.test(tag) ? tag : `(${tag})`}` : "수식";
@@ -168,10 +86,13 @@
     if (o.kind === "section" || o.kind === "para") { const t = cleanTag(o.heading); if (t) return t; }
     else if (tag) return sub ? `${tag} ${sub}` : tag;
     const lt = String(o.linkTitle || "").split(" ‣ ")[0].trim();
-    return lt || cleanTag(o.linkText) || "참조";
+    if (lt && !/^In\s/.test(lt)) return lt;
+    const tx = cleanTag(o.linkText);
+    if (tx && o.noun && NUMBERISH.test(tx)) return `${o.noun} ${tx}`;
+    return tx || "참조";
   }
 
-  const api = { idFromHref, refKind, classifyHref, cleanTag, refKey, tagKeys, bibKeys, findMentions, sentenceBounds, titleFrom };
+  const api = { idFromHref, refKind, classifyHref, cleanTag, sentenceBounds, titleFrom };
   if (typeof module !== "undefined") module.exports = api;
   if (typeof document === "undefined") return; // node: 여기서 끝
   if (document.body.dataset.page !== "paper") return;
@@ -196,7 +117,9 @@
   }
 
   // 대상 요소 → {kind, box(복제할 덩어리), mark(그 안에서 강조할 부분), jump(이동할 곳), id(언급 목록 기준), title}
-  function resolve(el) {
+  // link: 탭한 링크 (있으면). 대상에 꼬리표가 없을 때 제목을 그 title·글자에서
+  function resolve(el, link) {
+    const lk = link ? { linkTitle: link.getAttribute("title") || "", linkText: link.textContent } : {};
     const note = el.closest(".ltx_note");
     if (note) {
       const tag = note.querySelector(".ltx_note_content .ltx_tag_note") || note.querySelector(".ltx_note_mark");
@@ -217,20 +140,21 @@
       let top = fig;
       for (let p = top.parentElement && top.parentElement.closest("figure"); p; p = p.parentElement && p.parentElement.closest("figure")) top = p;
       const sub = fig !== top ? fig : null;
+      const noun = top.matches(".ltx_table") ? "표" : top.matches(".ltx_float_algorithm") ? "알고리즘" : top.matches(".ltx_figure") ? "그림" : "";
       return { kind: "figure", box: top, mark: sub, jump: sub || top, id: top.id || fig.id,
-        title: titleFrom({ kind: "figure", tag: captionTag(top), sub: sub ? captionTag(sub) : "" }) };
+        title: titleFrom({ kind: "figure", tag: captionTag(top), sub: sub ? captionTag(sub) : "", noun, ...lk }) };
     }
     const thm = el.closest(".ltx_theorem, .ltx_proof");
     if (thm) {
       const tag = thm.querySelector(".ltx_tag_theorem") || thm.querySelector(".ltx_title");
-      return { kind: "theorem", box: thm, mark: null, jump: thm, id: thm.id, title: titleFrom({ kind: "theorem", tag: tag ? A.textOf(tag) : "" }) };
+      return { kind: "theorem", box: thm, mark: null, jump: thm, id: thm.id, title: titleFrom({ kind: "theorem", tag: tag ? A.textOf(tag) : "", ...lk }) };
     }
     if (el.matches("section")) {
       const t = titleEl(el);
-      return { kind: "section", box: el, mark: null, jump: t || el, id: el.id, title: titleFrom({ kind: "section", heading: t ? A.textOf(t) : "" }) };
+      return { kind: "section", box: el, mark: null, jump: t || el, id: el.id, title: titleFrom({ kind: "section", heading: t ? A.textOf(t) : "", ...lk }) };
     }
     const box = el.closest(".ltx_para, li, p") || el;
-    return { kind: "para", box, mark: null, jump: el, id: el.id, title: titleFrom({ kind: "para", heading: sectionTitleOf(el) }) };
+    return { kind: "para", box, mark: null, jump: el, id: el.id, title: titleFrom({ kind: "para", heading: sectionTitleOf(el), ...lk }) };
   }
   function bibInfo(li) {
     const tag = li.querySelector(".ltx_tag_bibitem");
@@ -299,41 +223,36 @@
     return p ? A.clipAround(A.textOf(p), A.textOf(link), 1500) : "";
   }
 
-  function askAbout(info, node, opts, close) {
-    if (opts.from === "answer" && PaperApp.session) {
-      close("close"); // 열린 대화에 이어서 질문 (지금 대화를 버리지 않음)
-      PaperApp.ask(`${info.title}에 대해 자세히 설명해줘`, { label: info.title });
-      return;
-    }
-    // 새 대화: 대상 내용(수식은 $alttext$)이 선택, 링크가 있던 문단이 문맥. 시트가 열리며 peek는 닫힘
+  // 새 대화: 대상 내용(수식은 $alttext$)이 선택, 링크가 있던 문단이 문맥. 시트가 열리며 peek는 닫힘
+  function askAbout(info, node, opts) {
     PaperApp.openSheet({
       quote: info.title, selection: clip(A.textOf(node), 3000),
       context: paraContext(opts.link || (info.kind === "footnote" && inPaper(info.box) ? info.box : null)), section: sectionTitleOf(info.box),
     });
   }
 
-  // peek를 연다: target은 id 또는 요소 (본문 안, 또는 다른 peek 복제 안의 각주). opts: {link, from: "paper"|"answer"}
+  // peek를 연다: target은 id 또는 요소 (본문 안, 또는 다른 peek 복제 안의 각주). opts: {link: 탭한 링크}
   function open(target, opts = {}) {
     const el = typeof target === "string" ? byId(target) : target;
     if (!el || !(inPaper(el) || el.closest(".rp-body"))) return null;
     const bib = el.closest("li.ltx_bibitem");
-    const info = bib ? bibInfo(bib) : resolve(el);
+    const info = bib ? bibInfo(bib) : resolve(el, opts.link);
     const body = bib ? { node: h("div", { class: "rp-body rp-bib" }, cleanClone(bib).el), mark: null } : buildBody(info);
     const links = info.id ? linksTo(info.id) : []; // 문장은 목록을 열 때 계산 (peek는 바로)
     const actions = [];
     if (info.jump && inPaper(info.jump)) actions.push({ label: "그 위치로 이동", primary: true, onClick: () => goTo(info.jump) });
-    actions.push({ label: "이 부분 질문", onClick: ({ close }) => askAbout(info, body.node, opts, close) });
+    actions.push({ label: "이 부분 질문", onClick: () => askAbout(info, body.node, opts) });
     if (links.some(a => a !== opts.link)) {
       actions.push({ label: `${links.length}곳에서 ${bib ? "인용" : "언급"}`, onClick: () => showBacklinks(info.id, { title: info.title, current: opts.link }) });
     }
     const close = UI.peek({ title: info.title, body: body.node, actions, className: `rp-peek rp-peek-${info.kind}` });
-    wireBody(close.body, info, opts);
+    wireBody(close.body, info);
     if (body.mark) requestAnimationFrame(() => centerIn(close.el, body.mark));
     return close;
   }
 
   // peek 안의 탭: 본문 참조 링크 → 그 위에 또 peek, 각주 표시 → 각주 peek, 그림 → figure-viewer (있을 때만)
-  function wireBody(bodyEl, info, opts) {
+  function wireBody(bodyEl, info) {
     if (info.kind === "figure" && PaperApp.has("figure-viewer")) bodyEl.querySelectorAll("img").forEach(i => i.classList.add("rp-zoom"));
     bodyEl.addEventListener("click", e => {
       const t = e.target;
@@ -344,11 +263,11 @@
         if (!href.startsWith("#")) return; // 바깥 링크는 새 탭
         e.preventDefault(); // 레이어가 열려 있을 때의 기본 점프(ui.js)도 막음
         const el = byId(idFromHref(href));
-        if (inPaper(el)) open(el, { from: opts.from });
+        if (inPaper(el)) open(el, { link: a });
         return;
       }
       const note = t.closest(".ltx_note_mark") && t.closest(".ltx_note");
-      if (note && note.querySelector(".ltx_note_content")) { open(note, { from: opts.from }); return; }
+      if (note && note.querySelector(".ltx_note_content")) { open(note); return; }
       const img = t.closest("img");
       if (img && info.kind === "figure" && PaperApp.has("figure-viewer")) {
         const i = [...bodyEl.querySelectorAll("img")].indexOf(img);
@@ -392,6 +311,7 @@
     span.append(r.cloneContents());
     span.querySelectorAll(".pr-ui, .tr-ko, .ltx_note_outer").forEach(x => x.remove());
     span.querySelectorAll("[id]").forEach(x => x.removeAttribute("id"));
+    span.querySelectorAll("[tabindex], [role]").forEach(x => { x.removeAttribute("tabindex"); x.removeAttribute("role"); }); // 버튼 안이라 조작 요소 없이
     span.querySelectorAll(".tr-hide, .pa-flash").forEach(x => x.classList.remove("tr-hide", "pa-flash")); // 번역 모드에서 숨긴 원문도 보이게
     for (const a of span.querySelectorAll("a")) {
       const el = byId(idFromHref(a.getAttribute("href")));
@@ -421,8 +341,11 @@
   }
 
   // ---------- 본문 탭: 참조 링크(#bib. 제외 → cite-cards), 각주 표시 ----------
+  // allowWithSelection: 선택이 있거나 방금 해제한 탭도 받음. 안 그러면 링크가 기본 해시 이동(스크롤·기록)을 하고,
+  // 문장 모드(smart-presets:sentence 20, allowWithSelection)가 링크 탭을 가져감 (§5.4: 링크가 이김).
+  // test는 참조 링크·각주 표시에만 맞으니 보통 글자 탭(문장 고르기)은 그대로
   PaperApp.addTapHandler({
-    id: "ref-peek", priority: 80,
+    id: "ref-peek", priority: 80, allowWithSelection: true,
     test: e => {
       const t = e.target;
       const a = t.closest('a[href^="#"]');
@@ -435,95 +358,23 @@
       const note = mark && !mark.closest(".ltx_note_outer") && mark.closest(".ltx_note");
       return note && note.querySelector(".ltx_note_content") ? { el: note, link: null } : null;
     },
-    handle: (e, hit) => open(hit.el, { link: hit.link, from: "paper" }),
+    handle: (e, hit) => open(hit.el, { link: hit.link }),
   });
 
-  // ---------- 답변 속 참조 ("Figure 3", "식 (5)", "[12]" …): .a를 바꾸지 않고 칠하기(raw Range)로 표시, 탭은 위치로 판정 ----------
-  // .a를 다시 그리는 것은 근거 칩(evidence-chips)뿐 (규칙 8) → 답변이 바뀌면(MutationObserver) 다시 찾기만 함. 토큰 0
-  let refMap = null;
-  function buildRefMap() {
-    const m = new Map();
-    const put = (keys, id) => { if (id) for (const k of keys) if (!m.has(k)) m.set(k, id); };
-    for (const t of paper.querySelectorAll(".ltx_tag_equation")) {
-      const u = live(t) && t.closest("tr[id], tbody[id], table[id]");
-      if (u && paper.contains(u)) put(tagKeys("equation", t.textContent), u.id);
-    }
-    for (const f of paper.querySelectorAll("figure[id]")) {
-      if (!live(f)) continue;
-      const parent = f.parentElement && f.parentElement.closest("figure");
-      if (!parent) { put(tagKeys("figure", captionTag(f)), f.id); continue; }
-      const letter = cleanTag(captionTag(f)).match(/^\(?([a-z])\)?$/i), base = tagKeys("figure", captionTag(parent))[0];
-      if (letter && base) put([base + letter[1].toLowerCase()], f.id);
-    }
-    for (const s of paper.querySelectorAll("section[id]")) {
-      const tag = titleEl(s) && titleEl(s).querySelector(".ltx_tag");
-      if (tag) put(tagKeys("section", tag.textContent), s.id);
-    }
-    for (const t of paper.querySelectorAll(".ltx_theorem[id]")) {
-      const tag = t.querySelector(".ltx_tag_theorem");
-      if (tag) put(tagKeys("theorem", tag.textContent), t.id);
-    }
-    for (const li of paper.querySelectorAll("li.ltx_bibitem[id]")) {
-      const tag = li.querySelector(".ltx_tag_bibitem");
-      if (tag) put(bibKeys(tag.textContent), li.id);
-    }
-    for (const a of paper.querySelectorAll('a[href^="#bib."]')) {
-      const li = live(a) && linkTarget(a);
-      if (li) put(bibKeys(a.textContent, false), li.id);
-    }
-    return m;
+  // ---------- 각주 표시를 키보드·화면 읽기로도 (본문을 숨긴 각주의 유일한 입구) ----------
+  // 규칙 5: 본문 요소에는 속성만 (tabindex·aria-label). role=button은 달지 않음: 번역(.tr-ko.pr-ui) 같은 복제 안에서
+  // 기반 디스패처가 [role=button]을 기능 조작 요소로 보고 탭을 버리기 때문. Enter/Space → 바로 open()
+  for (const m of paper.querySelectorAll(".ltx_note > .ltx_note_mark")) {
+    if (!live(m) || !m.parentElement.querySelector(".ltx_note_content")) continue;
+    m.setAttribute("tabindex", "0");
+    m.setAttribute("aria-label", `각주 ${cleanTag(m.textContent)}`.trim());
   }
-
-  const SKIP_ANS = "code, pre, a, button, .math, .katex, math, svg";
-  let found = []; // [{a: 답변 요소, range, id}]
-  const repaint = () => {
-    found = found.filter(x => x.a.isConnected && x.range.startContainer.isConnected);
-    A.paint("rp-ans", found.map(x => x.range), { priority: 5, raw: true });
-  };
-  function scanAnswer(aEl) {
-    found = found.filter(x => x.a !== aEl);
-    const map = refMap || (refMap = buildRefMap());
-    if (aEl.isConnected && map.size) {
-      const w = document.createTreeWalker(aEl, NodeFilter.SHOW_TEXT);
-      for (let n = w.nextNode(); n; n = w.nextNode()) {
-        const skip = n.parentElement && n.parentElement.closest(SKIP_ANS);
-        if (skip && aEl.contains(skip)) continue;
-        for (const mt of findMentions(n.data)) {
-          const id = mt.keys.map(k => map.get(k)).find(Boolean);
-          if (!id) continue;
-          const r = document.createRange();
-          r.setStart(n, mt.start);
-          r.setEnd(n, mt.end);
-          found.push({ a: aEl, range: r, id });
-        }
-      }
-    }
-    repaint();
-  }
-  const watched = new WeakSet();
-  function watch(aEl) {
-    if (watched.has(aEl) || typeof MutationObserver === "undefined") return;
-    watched.add(aEl);
-    let timer;
-    new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(() => scanAnswer(aEl), 150); })
-      .observe(aEl, { childList: true, subtree: true, characterData: true });
-  }
-  // 다른 기능의 answer-done 처리(근거 줄 지우고 다시 그리기)가 끝난 뒤에 찾음. 복원된 턴도 (네트워크 없음)
-  PaperApp.on("answer-done", d => {
-    const a = d && d.answerEl;
-    if (a) setTimeout(() => { scanAnswer(a); watch(a); }, 0);
-  });
-  PaperApp.on("sheet-close", () => setTimeout(repaint, 0));
-
-  const near = (r, x, y, px, py) => [...r.getClientRects()].some(b => x >= b.left - px && x <= b.right + px && y >= b.top - py && y <= b.bottom + py);
-  document.getElementById("answer")?.addEventListener("click", e => {
-    if (!found.length || e.defaultPrevented || e.button || !(e.target instanceof Element) || !e.target.closest(".a")) return;
-    const s = document.getSelection();
-    if (s && !s.isCollapsed && e.currentTarget.contains(s.anchorNode)) return; // 답변 글자를 고르는 중
-    const pick = (px, py) => found.find(f => f.a.isConnected && !f.range.collapsed && near(f.range, e.clientX, e.clientY, px, py));
-    const hit = pick(0, 0) || pick(3, 6);
-    if (!hit) return;
+  document.addEventListener("keydown", e => {
+    if ((e.key !== "Enter" && e.key !== " ") || e.altKey || e.ctrlKey || e.metaKey || !(e.target instanceof Element)) return;
+    const m = e.target.closest(".ltx_note_mark[tabindex]");
+    const note = m && !m.closest(".ltx_note_outer") && m.closest(".ltx_note");
+    if (!note || !note.querySelector(".ltx_note_content") || !(inPaper(note) || note.closest(".rp-body"))) return;
     e.preventDefault();
-    open(hit.id, { from: "answer" });
+    open(note);
   });
 })();
