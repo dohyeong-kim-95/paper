@@ -11,6 +11,10 @@
 /* 섹션 경계: 막대를 끊는 틈 */
 .toc-tick { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--bg); }
 .toc-progress:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* 헤더 자동 숨김: 띠가 화면 맨 위(상태 표시줄 바로 아래)로 가면 위쪽 7px은 화면 밖 → 막대를 위에 두고 누르는 자리는 아래로
+   (띠가 차지하는 높이는 그대로 3px, 아래 7px은 본문 위에 투명하게 살짝 겹침) */
+:root.pr-bar-hidden .toc-progress { margin: 0 0 -7px; }
+:root.pr-bar-hidden .toc-track { top: 0; bottom: auto; }
 
 /* 서랍: 왼쪽에서 (배경 25, 서랍 26 → peek는 그 위로) */
 .toc-backdrop { position: fixed; inset: 0; z-index: var(--z-peek); background: rgba(0,0,0,.3); opacity: 0;
@@ -28,7 +32,8 @@
 .toc-tab[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
 .toc-x { border: 0; background: none; color: var(--fg); font-size: 20px; padding: 4px 8px; }
 .toc-info { padding: 2px 16px 8px; font-size: 13px; color: var(--muted); border-bottom: 1px solid var(--line); }
-.toc-body { position: relative; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 6px 6px 24px; }
+/* 목록은 따로 스크롤되는 상자라 서랍의 pan-y가 닿지 않음 → 여기에도 pan-y (가로로 밀면 pointerup이 와서 밀어 닫기가 됨) */
+.toc-body { position: relative; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 6px 6px 24px; touch-action: pan-y; }
 .toc-ul { list-style: none; margin: 0; padding: 0; }
 .toc-ul .toc-ul { padding-left: 14px; }
 .toc-item { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px;

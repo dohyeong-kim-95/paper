@@ -3,8 +3,8 @@
 "use strict";
 const assert = require("node:assert/strict");
 
-let chromium;
-try { ({ chromium } = require("playwright")); } catch { console.log("SKIP playwright 없음"); process.exit(0); }
+let chromium, devices;
+try { ({ chromium, devices } = require("playwright")); } catch { console.log("SKIP playwright 없음"); process.exit(0); }
 
 const PORT = process.argv[2];
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -17,8 +17,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 // 바깥 네트워크는 막고, 논문 그림은 width/height와 같은 비율의 SVG로 (로드 뒤 레이아웃이 밀리지 않게).
 // /api/*(다른 기능의 생성 요청)는 빈 실패로: 이 테스트는 목차만 봄
 const IMG_SIZE = { "x1.png": [598, 300], "x2.png": [300, 200], "x3.svg": [300, 200] };
-async function newPage(browser, { init, initArg, viewport } = {}) {
-  const ctx = await browser.newContext({ viewport: viewport || { width: 412, height: 800 }, serviceWorkers: "block" });
+async function newPage(browser, { init, initArg, viewport, device } = {}) {
+  const ctx = await browser.newContext({ viewport: viewport || { width: 412, height: 800 }, ...(device || {}), serviceWorkers: "block" });
   await ctx.route(u => !u.href.startsWith(BASE), r => {
     if (r.request().resourceType() !== "image") return r.fulfill({ status: 200, body: "", contentType: "text/plain" });
     const [w, h] = IMG_SIZE[r.request().url().split("/").pop()] || [300, 200];
@@ -40,6 +40,19 @@ async function open(page, url = PAPER) {
 }
 const until = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 5000 });
 const toastText = page => page.evaluate(() => { const t = document.getElementById("pr-toast"); return t && !t.hidden ? t.textContent : ""; });
+const savedPos = page => page.evaluate(k => JSON.parse(localStorage.getItem(k)), POS_KEY);
+// 진짜 손가락 끌기 (CDP 터치): 마우스와 달리 브라우저가 스크롤로 가져가면 pointercancel이 옴
+async function touchDrag(page, from, to, steps = 10) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [from] });
+  for (let i = 1; i <= steps; i++) {
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove",
+      touchPoints: [{ x: from.x + (to.x - from.x) * i / steps, y: from.y + (to.y - from.y) * i / steps }] });
+    await sleep(16);
+  }
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await cdp.detach();
+}
 
 test("목차 버튼은 헤더 첫 자리, 서랍에 초록·섹션·하위 섹션(중첩)·부록·참고문헌, 누르면 그 섹션 제목이 띠 바로 아래로", async browser => {
   const page = await newPage(browser);
@@ -134,6 +147,19 @@ test("진행 막대: 헤더 아래 띠 첫 줄, 섹션 경계 눈금, 스크롤�
   await page.click(".toc-progress");
   const t = await toastText(page);
   assert.match(t, /^이 섹션 약 \d+분 · 전체 \d+% · 끝까지 약 \d+분$/);
+  // 헤더 자동 숨김: 띠가 화면 맨 위로 → 막대는 맨 위, 누르는 자리 7px은 그 아래로 (화면 밖으로 나가지 않음), 띠 높이는 그대로 3px
+  await page.evaluate(() => PaperUI.setBarHidden(true));
+  await sleep(400);
+  const r1 = await page.evaluate(() => {
+    const b = document.querySelector(".toc-progress").getBoundingClientRect(), tr = document.querySelector(".toc-track").getBoundingClientRect();
+    const hit = document.elementFromPoint(b.left + b.width / 2, b.top + 8);
+    return { top: Math.round(b.top), h: Math.round(b.height), track: Math.round(tr.top - b.top), stackH: document.getElementById("top-stack").offsetHeight,
+      hit: !!(hit && hit.closest(".toc-progress")) };
+  });
+  assert.deepEqual(r1, { top: 0, h: 10, track: 0, stackH: 3, hit: true });
+  await page.evaluate(() => PaperUI.setBarHidden(false));
+  await sleep(400);
+  assert.equal(await page.evaluate(() => Math.round(document.getElementById("bar").getBoundingClientRect().bottom - document.querySelector(".toc-progress").getBoundingClientRect().top)), 7);
   assert.deepEqual(page.errors, []);
 });
 
@@ -167,7 +193,9 @@ test("이어 읽기: 저장 위치가 3%를 넘으면 토스트, '이동'은 글
   const page = await newPage(browser, { init: seed });
   await open(page);
   await until(page, () => /이어 읽기/.test(document.getElementById("pr-toast")?.textContent || ""));
-  assert.equal(await toastText(page), "이어 읽기 · 2 Method이동");
+  // 공용 토스트는 폭이 화면 절반까지 → 412px 폰에서는 '§번호'로 줄여 '이동' 버튼이 두 줄로 꺾이지 않게
+  assert.equal(await toastText(page), "이어 읽기 · §2이동");
+  assert.ok(await page.evaluate(() => document.querySelector("#pr-toast button").getBoundingClientRect().height < 30), "'이동'이 한 줄");
   assert.equal(await page.evaluate(() => Math.round(scrollY)), 0);
   await page.click("#pr-toast button");
   await sleep(200);
@@ -185,6 +213,39 @@ test("이어 읽기: 저장 위치가 3%를 넘으면 토스트, '이동'은 글
   const pos = await page.evaluate(k => JSON.parse(localStorage.getItem(k)), POS_KEY);
   assert.equal(pos.paraId, "S2.p3");
   assert.ok(Math.abs(pos.ratio - 0.5) < 0.05, `ratio ${pos.ratio}`);
+  assert.deepEqual(page.errors, []);
+});
+
+test("이어 읽기 문구: 넓은 화면에서는 섹션 제목 그대로", async browser => {
+  const seed = () => localStorage.setItem("pr:toc-progress:pos:2401.00001", JSON.stringify({ paraId: "S2.p3", ratio: 0.5, pct: 50, ts: 1 }));
+  const page = await newPage(browser, { init: seed, viewport: { width: 1000, height: 800 } });
+  await open(page);
+  await until(page, () => /이어 읽기/.test(document.getElementById("pr-toast")?.textContent || ""));
+  assert.equal(await toastText(page), "이어 읽기 · 2 Method이동");
+  assert.ok(await page.evaluate(() => document.querySelector("#pr-toast button").getBoundingClientRect().height < 30));
+  assert.deepEqual(page.errors, []);
+});
+
+test("이어 읽기 안내가 다른 기능의 '실행 취소' 토스트 뒤에 줄 서도, 실제로 떠 있는 동안은 저장 자리를 덮지 않고 사라진 뒤 저장", async browser => {
+  const seed = () => {
+    localStorage.setItem("pr:toc-progress:pos:2401.00001", JSON.stringify({ paraId: "S2.p3", ratio: 0.2, pct: 50, ts: 1 }));
+    document.addEventListener("DOMContentLoaded", () => PaperUI.toast("삭제됨", { actionLabel: "실행 취소", ms: 5000 }));
+  };
+  const page = await newPage(browser, { init: seed });
+  await open(page);
+  assert.equal(await toastText(page), "삭제됨실행 취소");
+  await page.waitForFunction(() => /이어 읽기/.test(document.getElementById("pr-toast")?.textContent || ""), null, { timeout: 9000 });
+  // 안내가 뜬 지 4초 (안내를 낸 때로부터는 8초가 넘음): 아직 떠 있고, 스크롤해도 저장 자리 그대로
+  await sleep(4000);
+  await page.evaluate(() => window.scrollTo(0, 30));
+  await sleep(1300);
+  assert.match(await toastText(page), /^이어 읽기/);
+  assert.equal((await savedPos(page)).pct, 50);
+  // 안내가 사라지면 다시 저장
+  await page.waitForFunction(() => document.getElementById("pr-toast").hidden, null, { timeout: 5000 });
+  await page.evaluate(() => window.scrollTo(0, 40));
+  await sleep(1300);
+  assert.ok((await savedPos(page)).pct < 3, "안내가 사라진 뒤에는 새 자리로 저장");
   assert.deepEqual(page.errors, []);
 });
 
@@ -289,6 +350,118 @@ test("번역 모드: paper:translations 뒤 section-translate.titleFor 제목 (�
   assert.deepEqual(titles, ["초록", "1 Introduction", "2 방법", "2.1 학습 목표", "Appendix A Additional results", "References"]);
   await page.evaluate(() => document.dispatchEvent(new CustomEvent("paper:translations", { detail: { mode: "orig" } })));
   assert.equal(await page.evaluate(() => document.getElementById("bar-section").textContent), "2 Method");
+  assert.deepEqual(page.errors, []);
+});
+
+test("터치로 서랍을 왼쪽으로 밀면 목록 위에서도 닫힘 (항목으로 이동하지 않음), 세로로 끌면 그대로", async browser => {
+  const page = await newPage(browser, { device: devices["Pixel 7"] });
+  await open(page);
+  const openDrawer = async () => {
+    await page.tap("#bar-actions > button:first-child");
+    await until(page, () => document.querySelector(".toc-drawer.toc-in"));
+    await sleep(250);
+  };
+  const at = sel => page.evaluate(s => { const r = document.querySelector(s).getBoundingClientRect(); return { x: r.left + r.width * 0.8, y: r.top + r.height / 2 }; }, sel);
+  await openDrawer();
+  let p = await at('.toc-item[data-id="S1"]');
+  await touchDrag(page, p, { x: p.x, y: p.y + 120 });
+  await sleep(300);
+  assert.equal(await page.evaluate(() => !!document.querySelector(".toc-drawer")), true, "세로로 끌면 닫히지 않음");
+  p = await at('.toc-item[data-id="S1"]');
+  await touchDrag(page, p, { x: p.x - 200, y: p.y + 10 });
+  await sleep(500);
+  assert.deepEqual(await page.evaluate(() => [!!document.querySelector(".toc-drawer"), Math.round(scrollY), PaperNav.depth]), [false, 0, 0]);
+  // 위쪽 탭·안내 줄에서도
+  await openDrawer();
+  p = await at(".toc-info");
+  await touchDrag(page, p, { x: p.x - 200, y: p.y });
+  await sleep(500);
+  assert.equal(await page.evaluate(() => !!document.querySelector(".toc-drawer")), false);
+  assert.deepEqual(page.errors, []);
+});
+
+test("번역 모드(원문 숨김): 숨은 초록 문단을 읽은 것으로 치지 않고, 목차·이어 읽기 점프는 보이는 번역 쪽을 대상으로", async browser => {
+  const seed = () => localStorage.setItem("pr:toc-progress:pos:2401.00001", JSON.stringify({ paraId: "S2.p3", ratio: 0.5, pct: 50, ts: 1 }));
+  const page = await newPage(browser, { init: seed });
+  await open(page);
+  await until(page, () => /이어 읽기/.test(document.getElementById("pr-toast")?.textContent || ""));
+  // section-translate 계약의 DOM: 영어 단위(p.ltx_p·제목)에 tr-hide, 바로 뒤에 .tr-ko 형제
+  await page.evaluate(() => {
+    const st = document.createElement("style");
+    st.textContent = ".tr-hide{display:none!important}";
+    document.head.append(st);
+    const paper = document.getElementById("paper");
+    for (const u of paper.querySelectorAll("p.ltx_p, section > .ltx_title, .ltx_abstract > .ltx_title")) {
+      const ko = document.createElement(u.localName === "p" ? "div" : u.localName);
+      ko.className = "tr-ko pr-ui";
+      ko.textContent = u.localName === "p" ? "한국어 번역 문장입니다. ".repeat(Math.max(2, Math.round(u.textContent.length / 40))) : "번역 제목";
+      u.classList.add("tr-hide");
+      u.after(ko);
+    }
+    window.__reveals = [];
+    document.addEventListener("paper:reveal", e => __reveals.push(e.detail.el));
+    document.dispatchEvent(new CustomEvent("paper:translations", { detail: { mode: "ko" } }));
+  });
+  await sleep(400);
+  // 이어 읽기 '이동': 문단(S2.p3) 안의 보이는 번역을 대상으로 → 숨은 원문을 꺼내지 않고, 문단 가운데가 기준선에
+  await page.click("#pr-toast button");
+  await sleep(200);
+  const r = await page.evaluate(() => {
+    const b = document.getElementById("S2.p3").getBoundingClientRect();
+    const line = document.getElementById("top-stack").getBoundingClientRect().bottom;
+    const t = __reveals[0];
+    return { off: Math.round(b.top + 0.5 * b.height - line), ko: t.classList.contains("tr-ko"), inPara: document.getElementById("S2.p3").contains(t) };
+  });
+  assert.ok(Math.abs(r.off) <= 2, `기준선과 문단 가운데 차이 ${r.off}px`);
+  assert.deepEqual([r.ko, r.inPara], [true, true]);
+  // 맨 위 (초록 번역 위): 저장 자리가 1장 첫 문단으로 건너뛰지 않고, 초록은 '읽음'이 아님
+  await page.evaluate(() => window.scrollTo(0, 5));
+  await sleep(1300);
+  const pos = await savedPos(page);
+  assert.notEqual(pos.paraId, "S1.p1");
+  assert.ok(pos.ratio === 0 && pos.pct < 3, JSON.stringify(pos));
+  // 초록 두 번째 문단(의 번역) 중간에 기준선 → 그 문단 안 비율로
+  await page.evaluate(() => {
+    const ko = document.querySelectorAll(".ltx_abstract > .tr-ko")[2];
+    const line = document.getElementById("top-stack").getBoundingClientRect().bottom;
+    const b = ko.getBoundingClientRect();
+    window.scrollTo(0, b.top + scrollY - line + b.height / 2);
+  });
+  await sleep(1300);
+  const pos2 = await savedPos(page);
+  assert.ok(pos2.ratio > 0.3 && pos2.ratio < 0.7, JSON.stringify(pos2));
+  await page.click("#bar-actions > button:first-child");
+  await until(page, () => document.querySelector(".toc-drawer"));
+  assert.equal(await page.evaluate(() => document.querySelector('.toc-item[data-id="abstract"]').classList.contains("toc-read")), false);
+  // 목차 이동: 섹션 전체가 아니라 보이는 (번역) 제목만 paper:reveal 대상
+  await page.evaluate(() => { __reveals.length = 0; });
+  await page.click('.toc-item[data-id="S2.SS1"]');
+  await sleep(700);
+  const j = await page.evaluate(() => __reveals.map(el => `${el.localName}.${[...el.classList].filter(c => c !== "pa-flash").join(" ")}`));
+  assert.deepEqual(j, ["h3.tr-ko pr-ui"]);
+  assert.deepEqual(page.errors, []);
+});
+
+test("찾기 정리 화면(ps-declutter)에서는 위치를 저장하지 않고, 끝나면 다시 저장", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  await page.evaluate(() => {
+    const paper = document.getElementById("paper");
+    paper.classList.add("ps-declutter");
+    for (const p of paper.querySelectorAll(".ltx_para")) if (p.id !== "S2.p3") p.style.display = "none";
+    window.scrollTo(0, 200);
+  });
+  await sleep(1300);
+  assert.equal(await savedPos(page), null);
+  await page.evaluate(() => {
+    const paper = document.getElementById("paper");
+    paper.classList.remove("ps-declutter");
+    for (const p of paper.querySelectorAll(".ltx_para")) p.style.display = "";
+    const el = document.getElementById("S2.SS1.p1");
+    window.scrollTo(0, el.getBoundingClientRect().top + scrollY - document.getElementById("top-stack").getBoundingClientRect().bottom + 5);
+  });
+  await sleep(1300);
+  assert.equal((await savedPos(page)).paraId, "S2.SS1.p1");
   assert.deepEqual(page.errors, []);
 });
 

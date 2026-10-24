@@ -71,6 +71,29 @@
   const shouldOfferResume = (saved, hash = "") =>
     !!saved && typeof saved === "object" && Number(saved.pct) > 3 && !String(hash || "").replace(/^#/, "");
 
+  // '이어 읽기' 안내 문구: 제목 → §번호 → 진행률 순으로 한 줄에 들어가는 첫 것 (fits: 문구 → bool). 다 길면 '이어 읽기'만
+  function resumeLabel({ title, tag, pct } = {}, fits = () => true) {
+    const t = String(tag ?? "").trim(), p = Number(pct);
+    const cands = [title, /^[\dA-Z]+(\.\d+)*$/.test(t) ? `§${t}` : "", pct != null && Number.isFinite(p) ? `${Math.round(p)}%` : ""];
+    for (const c of cands) {
+      const s = String(c ?? "").trim();
+      if (s && fits(`이어 읽기 · ${s}`)) return `이어 읽기 · ${s}`;
+    }
+    return "이어 읽기";
+  }
+
+  // 기준선 y에 걸친(또는 그 아래 첫) 보이는 문단. boxAt(i) = 문서 순서 i번째 문단의 {top, bottom} | null(숨음: 번역 모드의
+  // 원문·찾기 정리). 숨은 문단은 다음 보이는 문단과 같은 자리로 봐서 이분 탐색 유지 → [i, box], 기준선이 모든 문단 아래면 [n, null]
+  function boxAtLine(n, boxAt, y) {
+    const next = i => { for (; i < n; i++) { const b = boxAt(i); if (b) return [i, b]; } return [n, null]; };
+    let lo = 0, hi = n;
+    while (lo < hi) {
+      const m = (lo + hi) >> 1, [j, b] = next(m);
+      if (b && b.bottom <= y) lo = j + 1; else hi = m;
+    }
+    return next(lo);
+  }
+
   // 가져오기 병합 (pr:toc-progress:pos:*): 더 최근 ts
   function mergePos(local, incoming) {
     if (!local || typeof local !== "object") return incoming ?? local;
@@ -115,7 +138,7 @@
 
   const api = {
     buildToc, levelNum, wordCount, prefixSums, minutesLeft, fmtMinutes, updateWpm, meterStep, sectionLeft, tickFrac,
-    resumeY, shouldOfferResume, mergePos, firstSentence, figLabel, buildMap,
+    resumeY, shouldOfferResume, resumeLabel, boxAtLine, mergePos, firstSentence, figLabel, buildMap,
   };
   if (typeof module !== "undefined") module.exports = api;
   if (typeof document === "undefined") return;
@@ -184,22 +207,31 @@
   // 내용이 시작되는 선 = 헤더 아래 띠(#top-stack)의 아래 끝 (헤더 자동 숨김도 따라감)
   const topStack = document.getElementById("top-stack");
   const topLine = () => { const b = topStack ? topStack.getBoundingClientRect().bottom : 0; return b > 0 ? b : 56; };
-  // 기준선 y에 걸친(또는 그 아래 첫) 문단: 살아 있는 위치로 이분 탐색
-  function paraAtLine(y) {
-    let lo = 0, hi = paras.length;
-    while (lo < hi) {
-      const m = (lo + hi) >> 1;
-      if (paras[m].getBoundingClientRect().bottom <= y) lo = m + 1; else hi = m;
+  // 문단이 화면에서 차지하는 자리: 문단 + 바로 뒤에 붙은 .tr-ko 번역 (번역 모드에서 원문이 숨으면 번역만).
+  // 다 숨었으면(display: none → 상자 없음) null
+  function paraBox(el) {
+    let top = Infinity, bottom = -Infinity;
+    for (let x = el; x && (x === el || x.classList.contains("tr-ko")); x = x.nextElementSibling) {
+      if (!x.getClientRects().length) continue;
+      const r = x.getBoundingClientRect();
+      top = Math.min(top, r.top);
+      bottom = Math.max(bottom, r.bottom);
     }
-    return lo;
+    return bottom >= top ? { top, bottom } : null;
+  }
+  // 점프 대상: paper:reveal이 숨은 원문을 드러내지 않게, 보이면서 숨은 원문을 담지 않은 요소 (번역 모드면 그 .tr-ko)
+  function shownBlock(el) {
+    if (el.getClientRects().length && !el.querySelector(".tr-hide")) return el;
+    const sib = el.nextElementSibling;
+    return el.querySelector(".tr-ko") || (sib && sib.classList.contains("tr-ko") ? sib : null) || el;
   }
   // {w: 읽은 단어 위치, el: 맨 위 문단, ratio: 그 문단 안 비율}
   function readPos() {
     if (!paras.length) return { w: 0, el: null, ratio: 0 };
-    const y = topLine(), k = paraAtLine(y);
-    if (k >= paras.length) return { w: cum[paras.length], el: null, ratio: 0 };
-    const r = paras[k].getBoundingClientRect();
-    const f = r.height > 0 ? clamp((y - r.top) / r.height, 0, 0.999) : 0;
+    const y = topLine(), [k, r] = boxAtLine(paras.length, i => paraBox(paras[i]), y);
+    if (!r) return { w: cum[paras.length], el: null, ratio: 0 };
+    const hgt = r.bottom - r.top;
+    const f = hgt > 0 ? clamp((y - r.top) / hgt, 0, 0.999) : 0;
     return { w: cum[k] + f * words[k], el: paras[k], ratio: f };
   }
 
@@ -336,6 +368,8 @@
     tickTimer = 0;
     lastTick = Date.now();
     if (!ready) return;
+    // 찾기 정리 화면(in-paper-search가 맞는 문단만 남김)은 읽는 자리가 아님: 속도·저장 모두 건너뜀 (끝나고 스크롤하면 저장)
+    if (paper.classList.contains("ps-declutter")) { resetMeter(); return; }
     const p = readPos();
     meterTick(p.w);
     if (pending || !dirty) return; // '이어 읽기' 안내 중에는 저장된 자리를 덮지 않음
@@ -374,20 +408,46 @@
     if (Math.abs(pctNow() - Number(saved.pct)) < 2) return;
     const el = saved.paraId ? document.getElementById(saved.paraId) : null;
     const e = el ? [...entries].reverse().find(x => x.el.contains(el)) : null;
+    const msg = resumeLabel({ title: e ? titleOf(e) : "", tag: e ? e.tag : "", pct: saved.pct }, fitsToast);
+    // 안내가 떠 있는 동안은 저장된 자리를 덮지 않음. 다른 기능의 '실행 취소' 토스트 뒤에 줄 서 있을 수 있으니
+    // 시간을 재지 않고, 이 안내가 실제로 떴다가 사라질 때(또는 '이동')까지
     pending = true;
-    setTimeout(() => { pending = false; }, 8000);
-    UI.toast(`이어 읽기 · ${e ? titleOf(e) : `${Math.round(saved.pct)}%`}`, {
-      actionLabel: "이동", ms: 8000,
-      onAction: () => { pending = false; resumeTo(saved); },
-    });
+    let mo = null, shown = false, cap = 0;
+    const done = () => { pending = false; if (mo) mo.disconnect(); mo = null; clearTimeout(cap); };
+    const t = UI.toast(msg, { actionLabel: "이동", ms: 8000, onAction: () => { done(); resumeTo(saved); } });
+    const root = document.getElementById("pr-toast");
+    if (!root || typeof MutationObserver === "undefined") { cap = setTimeout(done, 8000); return; }
+    const check = () => {
+      if (root.isConnected && !root.hidden && root.textContent.startsWith(msg)) shown = true;
+      else if (shown) done();
+    };
+    mo = new MutationObserver(check);
+    mo.observe(root, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["hidden"] });
+    check();
+    cap = setTimeout(() => { if (pending) { t.close(); done(); } }, 60000); // 줄이 풀리지 않는 비정상 상황의 안전판
+  }
+  // 토스트 한 줄에 '문구 + 이동'이 들어가는지. 공용 토스트는 left: 50%라 폭이 화면 절반까지라서(기반 쪽 문제),
+  // 길면 버튼 글자가 두 줄로 꺾임 → 캔버스로 재서 짧은 문구를 고름 (글자 14px, 좌우 여백 16, 간격 12)
+  let measureCtx = null;
+  function fitsToast(text) {
+    try {
+      measureCtx = measureCtx || document.createElement("canvas").getContext("2d");
+      const fam = getComputedStyle(document.body).fontFamily;
+      measureCtx.font = `14px ${fam}`;
+      const tw = measureCtx.measureText(text).width;
+      measureCtx.font = `600 14px ${fam}`;
+      const bw = measureCtx.measureText("이동").width;
+      return tw + bw + 12 + 32 + 6 <= Math.min(window.innerWidth / 2, window.innerWidth - 32);
+    } catch { return text.length <= 10; }
   }
   function resumeTo(p) {
     const el = p.paraId ? document.getElementById(p.paraId) : null;
     if (el && paper.contains(el)) {
-      PaperNav.jumpTo(el, { smooth: false, flash: false }); // '↩ 돌아가기'·숨긴 원문 드러내기
-      const r = el.getBoundingClientRect();
-      window.scrollTo({ top: resumeY(r.top + window.scrollY, r.height, p.ratio, topLine()), behavior: "auto" });
-      A.flash(el);
+      // '↩ 돌아가기'. 대상은 보이는 요소(번역 모드면 번역)라 paper:reveal이 이 문단의 원문을 다시 꺼내지 않음
+      PaperNav.jumpTo(shownBlock(el), { smooth: false, flash: false });
+      const r = paraBox(el) || el.getBoundingClientRect();
+      window.scrollTo({ top: resumeY(r.top + window.scrollY, r.bottom - r.top, p.ratio, topLine()), behavior: "auto" });
+      A.flash(shownBlock(el));
     } else if (maxY) {
       window.scrollTo({ top: (clamp(Number(p.pct) || 0, 0, 100) / 100) * maxY, behavior: "auto" });
     }
@@ -520,14 +580,15 @@
     return wrap;
   }
 
-  // 목차 이동: 서랍을 닫고 PaperNav.jumpTo(섹션)('↩ 돌아가기'·숨긴 원문 드러내기), 제목은 띠 바로 아래로
+  // 목차 이동: 서랍을 닫고 PaperNav.jumpTo('↩ 돌아가기'), 제목은 띠 바로 아래로. 점프 대상은 섹션 전체가 아니라 보이는 제목
+  // (번역 모드면 .tr-ko 제목): paper:reveal이 섹션 원문을 통째로 다시 꺼내지 않게
   let swipedAt = 0; // 밀어 닫은 손가락이 항목 위에서 떨어져도 이동하지 않게
   const swiped = () => Date.now() - swipedAt < 400;
   function go(e) {
     if (swiped()) return;
     if (drawer) drawer.close("close");
     if (!e || !e.el.isConnected) return;
-    PaperNav.jumpTo(e.el, { flash: false });
+    PaperNav.jumpTo(shownTitle(e) || e.titleEl || e.el, { flash: false });
     const y = e.el.getBoundingClientRect().top + window.scrollY - topLine() - 6;
     window.scrollTo({ top: Math.max(0, y), behavior: "smooth" });
     A.flash(shownTitle(e) || e.el);
