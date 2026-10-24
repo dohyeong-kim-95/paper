@@ -15,7 +15,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const EV_MARK = '근거: "영어 원문 그대로';
 const FOUND = "We propose a sparse mixture of experts model";
 const IMG_SIZE = { "x1.png": [598, 300] };
-const ANSWER = `MoE는 $x^2$ 비용을 줄입니다.\n근거: "${FOUND}"\n근거: "this sentence is certainly not in the paper"`;
+const MISSING = "this sentence is certainly not in the paper";
+const ANSWER = `MoE는 $x^2$ 비용을 줄입니다.\n근거: "${FOUND}"\n근거: "${MISSING}"`;
 
 // 바깥 네트워크는 막고(빈 응답, 그림은 크기만 맞춘 SVG), /api/ask는 정해진 답, /api/feedback은 기록만.
 // 읽어주기(speechSynthesis)·클립보드·공유 시트는 가짜로 바꿔 무엇을 했는지 기록
@@ -38,6 +39,20 @@ async function newPage(browser, { ask } = {}) {
     return r.fulfill({ status: 200, body: '{"ok":true}', contentType: "application/json" });
   });
   await ctx.addInitScript(() => {
+    // 본문 찾기(PaperAnchor.locate·findQuote)를 누가 불렀는지 기록: 답을 그리거나 복원할 때는 찾지 않아야 함 (긴 논문은 수 초)
+    window.__anchorCalls = [];
+    let anchor;
+    Object.defineProperty(window, "PaperAnchor", {
+      configurable: true,
+      get: () => anchor,
+      set(v) {
+        for (const k of ["locate", "findQuote"]) {
+          const f = v[k];
+          v[k] = function (...a) { __anchorCalls.push({ k, q: a[0], stack: new Error().stack }); return f.apply(this, a); };
+        }
+        anchor = v;
+      },
+    });
     // 긴 본문 (점프가 실제로 스크롤하도록)
     document.addEventListener("DOMContentLoaded", () => {
       const st = document.createElement("style");
@@ -78,6 +93,8 @@ async function open(page, url = PAPER) {
   await page.waitForFunction(() => window.PaperApp && document.readyState === "complete");
 }
 const until = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 5000 });
+// answer-tools가 부른 본문 찾기 (bundle의 sourceURL이 features/answer-tools.js)
+const myLookups = page => page.evaluate(() => __anchorCalls.filter(c => /answer-tools\.js/.test(c.stack)).map(c => c.q));
 async function askAndWait(page, n, fn) {
   await page.evaluate(fn);
   await page.waitForFunction(k => PaperApp.session && PaperApp.session.history.length === k * 2 && !PaperApp.streaming, n, { timeout: 5000 });
@@ -112,10 +129,24 @@ test("근거 칩: 질문에 근거 요청 한 번, 근거 줄은 칩으로, 탭�
     };
   });
   assert.ok(ui.a.includes("MoE는") && !ui.a.includes("근거"), ui.a);
-  assert.deepEqual(ui.chips, [`본문 보기: ${FOUND}`]);
-  assert.deepEqual(ui.miss, ["근거 “this sentence is certainly not in the paper”"]);
+  // 그릴 때는 본문에서 찾지 않으므로 없는 인용도 일단 칩
+  assert.deepEqual(ui.chips, [`본문 보기: ${FOUND}`, `본문 보기: ${MISSING}`]);
+  assert.deepEqual(ui.miss, []);
   assert.deepEqual(ui.order, ["evidence-chips", "answer-actions"]);
   assert.equal(ui.stored, ANSWER, "기록에는 원래 답 그대로");
+  assert.deepEqual(await myLookups(page), [], "답을 그릴 때 본문 찾기 없음");
+
+  // 본문에 없는 인용 칩: 누르면 알림, 칩은 흐린 글로 바뀌고 시트는 그대로
+  await page.click(`.at-ev-chip[aria-label="본문 보기: ${MISSING}"]`);
+  const missed = await page.evaluate(() => ({
+    toast: document.getElementById("pr-toast")?.textContent || "",
+    chips: document.querySelectorAll("#answer .turn .at-ev-chip").length,
+    miss: [...document.querySelectorAll("#answer .turn .at-ev-miss")].map(s => s.textContent),
+  }));
+  assert.ok(missed.toast.includes("찾지 못했습니다"), missed.toast);
+  assert.deepEqual([missed.chips, missed.miss], [1, [`근거 “${MISSING}”`]]);
+  assert.deepEqual(await state(page), { sheet: true, pill: false, back: false });
+  assert.deepEqual(await myLookups(page), [MISSING], "누를 때만 찾음");
 
   await page.evaluate(() => { PaperApp.minimizeSheet(); scrollTo(0, 2000); });
   await sleep(150);
@@ -139,7 +170,26 @@ test("근거 칩: 질문에 근거 요청 한 번, 근거 줄은 칩으로, 탭�
   const p2 = page.asks[1];
   assert.equal(p2.history[0].content, q1);
   assert.equal(p2.question.split(EV_MARK).length, 2);
-  assert.equal(await page.evaluate(() => document.querySelectorAll("#answer .turn .at-ev-chip").length), 2);
+  assert.equal(await page.evaluate(() => document.querySelectorAll("#answer .turn .at-ev-chip").length), 3);
+  assert.deepEqual(page.errors, []);
+});
+
+test("근거 줄 판별: 따옴표 친 용어가 섞인 '근거' 문장은 답에 남기고, 짧은 인용은 칩 없이 흐린 글", async browser => {
+  const PROSE = '저자들은 표 2에서 "MoE"가 "dense"보다 FLOPs가 적다고 보고합니다.';
+  const page = await newPage(browser, { ask: () => `라우터 설명입니다.\n**근거:** ${PROSE}\n\n"Attention"이라는 단어는 중요합니다.\n근거: "MoE"` });
+  await open(page);
+  await askAndWait(page, 1, () => PaperApp.openSheet({ quote: "x", selection: "x", autoAsk: "Q" }));
+  const ui = await page.evaluate(() => {
+    const t = document.querySelector("#answer .turn");
+    return {
+      a: t.querySelector(".a").textContent,
+      chips: t.querySelectorAll(".at-ev-chip").length,
+      miss: [...t.querySelectorAll(".at-ev-miss")].map(s => s.textContent),
+    };
+  });
+  assert.ok(ui.a.includes(PROSE.replace(/\*\*/g, "")) && ui.a.includes("이라는 단어는 중요합니다") && !ui.a.includes('근거: "MoE"'), ui.a);
+  assert.deepEqual([ui.chips, ui.miss], [0, ["근거 “MoE”"]]);
+  assert.deepEqual(await myLookups(page), []);
   assert.deepEqual(page.errors, []);
 });
 
@@ -157,7 +207,8 @@ test("복원: 새로고침 뒤 '답변 보기'의 지난 답도 근거 줄 대�
     chips: t.querySelectorAll(".at-ev-chip").length,
     actions: t.querySelectorAll("[data-slot='answer-actions'] button").length > 0,
   })));
-  assert.deepEqual(r, [{ raw: false, chips: 1, actions: true }, { raw: false, chips: 1, actions: true }]);
+  assert.deepEqual(r, [{ raw: false, chips: 2, actions: true }, { raw: false, chips: 2, actions: true }]);
+  assert.deepEqual(await myLookups(page), [], "복원할 때 본문 찾기 없음");
   assert.deepEqual(page.errors, []);
 });
 
