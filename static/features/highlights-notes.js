@@ -222,13 +222,21 @@
   let persisted = false;
   function saveItems() {
     if (!persisted) { persisted = true; try { navigator.storage?.persist?.().catch(() => {}); } catch { /* 무시 */ } }
-    if (S.setPaper(NS, items)) return true;
+    // 공간이 모자라면 자동 저장한 질문 기록(다른 논문 → 이 논문 순, 오래된 것부터)을 비우고 다시: 내 노트가 우선
+    for (let guard = 0; guard < 2000; guard++) {
+      if (S.setPaper(NS, items)) return true;
+      if (evictOldestElsewhere()) continue;
+      if (!threads.length) break;
+      threads = threads.slice(1);
+      if (!(threads.length && S.setPaper(TNS, threads))) { if (!threads.length) S.delPaper(TNS); else continue; }
+    }
     fullToast();
     return false;
   }
   // 질문 기록은 자동 저장. 논문당 바이트 상한(그림 설명의 이미지 등 큰 기록), 용량이 모자라면
   // 다른 논문까지 포함해 가장 오래된 기록부터 비우고 다시 (쓰기가 성공한 뒤에만 메모리의 목록을 바꿈)
-  const THREAD_BYTES = 1500000;
+  const THREAD_BYTES = 1500000;   // 논문당
+  const THREADS_TOTAL = 1500000;  // 모든 논문의 질문 기록 합 (나머지 공간은 내 노트·다른 기능 몫)
   const sizeOf = v => { try { return JSON.stringify(v).length; } catch { return 0; } };
   function evictOldestElsewhere() {
     const mine = S.paperKey(TNS);
@@ -240,14 +248,28 @@
       list.forEach((t, i) => { if (!best || (t && t.ts || 0) < best.ts) best = { key, list, i, ts: (t && t.ts) || 0 }; });
       if (!list.length) best = best || { key, list, i: -1, ts: 0 };
     }
-    if (!best) return false;
+    if (!best) return 0;
+    const freed = best.i >= 0 ? sizeOf(best.list[best.i]) + 1 : 1;
     const rest = best.list.filter((_, i) => i !== best.i);
     if (rest.length) { if (!S.set(best.key, rest)) S.del(best.key); } else S.del(best.key);
-    return true;
+    return freed;
+  }
+  function otherThreadBytes() {
+    const mine = S.paperKey(TNS);
+    let n = 0;
+    for (const full of S.keys(`${TNS}:`)) if (full !== mine) n += sizeOf(S.get(full.slice(S.PREFIX.length), null));
+    return n;
   }
   function saveThreads() {
     let list = threads.slice();
     while (list.length > 1 && sizeOf(list) > THREAD_BYTES) list = list.slice(1);
+    // 전체 상한: 다른 논문의 가장 오래된 기록부터 비움 (이 논문 몫은 위의 논문당 상한)
+    const mineBytes = sizeOf(list);
+    for (let others = otherThreadBytes(), guard = 0; others > 0 && others + mineBytes > THREADS_TOTAL && guard < 2000; guard++) {
+      const freed = evictOldestElsewhere();
+      if (!freed) break;
+      others -= freed;
+    }
     for (let guard = 0; guard < 500; guard++) {
       if (S.setPaper(TNS, list)) {
         if (list.length !== threads.length) { const keep = new Set(list.map(t => t.id)); threads = threads.filter(t => keep.has(t.id)); }
@@ -427,11 +449,18 @@
     return (id && items.find(x => x.id === id)) || items.find(x => threadsOf(x).includes(String(tid))) || null;
   };
   const inPaper = el => !!(el && el !== paperEl && paperEl.contains(el));
-  // 인용문이 본문에 몇 번 나오는지 (공백 정규화, 2 이상이면 2)
-  function occurrences(q) {
-    const t = oneLine(A.index().text), i = t.indexOf(q);
-    return i < 0 ? 0 : t.indexOf(q, i + 1) < 0 ? 1 : 2;
+  // 인용문이 (root 안에서, 없으면 본문 전체에서) locate와 같은 정규화로 정확히 한 번만 나올 때만 그 위치.
+  // 두 번 이상이거나 앞 8단어로만 찾히는 경우(fuzzy)는 모호하니 null
+  function locateUnique(q, root) {
+    const idx = A.index();
+    let lo = 0, hi = idx.text.length;
+    if (root) { const r = A.offsetsOfElement(root, idx); if (!r) return null; lo = r.start; hi = r.end; }
+    const nq = A.normalize(q), hay = A.normalize(idx.text.slice(lo, hi));
+    const i = nq ? hay.indexOf(nq) : -1;
+    if (i < 0 || hay.indexOf(nq, i + 1) >= 0) return null;
+    return A.locate(q, root ? { root } : {});
   }
+  const stripEllipsis = s => s.replace(/^[…\s]+|[…\s]+$/g, "");
   // 세션의 인용 위치: 선택에서 왔으면 그 앵커. 아니면 인용문을 그 문단(selInfo.paraId, 아니면 context가 나오는 문단)
   // 안에서 찾고, 문단을 모르면 본문에 한 번만 나올 때만. 그래도 모르면 null (점선·Q는 없이 패널의 질문 기록에만)
   function sessionAnchor(s) {
@@ -445,13 +474,15 @@
     if (!inPaper(para)) para = null;
     if (!para && s.context) {
       // context(문단에서 잘라 온 글)의 앞부분이 나오는 문단
-      const head = oneLine(s.context.replace(/<my-notes>[\s\S]*$|<my-note>[\s\S]*$/, "")).slice(0, 80).trim();
-      const c = head.length >= 20 ? A.locate(head) : null;
+      const head = stripEllipsis(stripEllipsis(oneLine(s.context.replace(/<my-notes>[\s\S]*$|<my-note>[\s\S]*$/, ""))).slice(0, 80));
+      const c = head.length >= 20 ? locateUnique(head) : null;
       const el = c && elAt(c.start);
       const box = el && el.closest(".ltx_para, p, li, figcaption, td");
       if (inPaper(box)) para = box;
     }
-    const o = para ? A.locate(q, { root: para }) : occurrences(q) === 1 ? A.locate(q) : null;
+    // 문단 안에서도 여러 번이면 selInfo의 앞뒤 문맥이 있을 때만 그것으로 고름 (없으면 모호 → null)
+    const o = locateUnique(q, para)
+      || (para && si && (si.prefix || si.suffix) ? A.locate(q, { root: para, prefix: si.prefix, suffix: si.suffix }) : null);
     if (!o) return null;
     const t = A.quoteAt(A.index().text, o.start, o.end);
     return { quote: t.quote, prefix: t.prefix, suffix: t.suffix, paraId: (para && para.id) || paraIdAt(o.start) };
