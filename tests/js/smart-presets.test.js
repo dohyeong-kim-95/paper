@@ -4,7 +4,7 @@ const sp = load("static/features/smart-presets.js");
 const { BASE_PRESETS, buildPayload, makeSession } = load("static/app.js");
 const {
   rankPresets, SMART_PRESETS, MEANING_Q, equationQ, styleTag, applyStyle, withReader, normalizeStyle,
-  fillTemplate, customPreset, normalizeCustom, sentenceSpans, spanAt, snapSpan,
+  fillTemplate, customPreset, normalizeCustom, sentenceSpans, spanAt, snapSpan, mathHeavy, explainPreset,
 } = sp;
 
 const ids = list => list.map(p => p.id);
@@ -47,6 +47,34 @@ test("'수식 풀이' 질문에 선택한 LaTeX가 들어감", () => {
   assert.ok(!equationQ({ latex: [] }).includes("수식:"));
   const eq = SMART_PRESETS.find(p => p.id === "equation");
   assert.equal(eq.q, equationQ);
+});
+
+// ---------- 원탭 '설명' ----------
+const P1 = "Large language models scale well, but dense computation grows as $x^{2}$ for width $x$. We propose a sparse mixture of " +
+  "experts model that routes each token to two experts [1, 2]. The router is trained jointly with the experts and the KD loss is cheap.";
+const words = t => t.split(/\s+/).filter(Boolean).length;
+
+test("mathHeavy: 수식만·수식 위주만 참, 기호 몇 개가 섞인 산문 문단은 거짓", () => {
+  assert.equal(mathHeavy({ isMath: true, latex: ["x^2"], text: "$x^2$" }), true);
+  assert.equal(mathHeavy({ isMath: false, latex: ["x^{2}", "x"], text: "grows as $x^{2}$ for width $x$" }), true, "산문 4단어 이하");
+  assert.equal(mathHeavy({ isMath: false, latex: ["\\sum_{i=1}^{N} g_i(x) E_i(x)"], text: "we have $\\sum_{i=1}^{N} g_i(x) E_i(x)$ where the gate is small" }), true, "LaTeX가 산문보다 김");
+  assert.equal(mathHeavy({ isMath: false, latex: ["x^{2}", "x"], text: P1, wordCount: words(P1) }), false);
+  assert.equal(mathHeavy({ isMath: false, latex: [], text: "plain words here" }), false);
+  assert.equal(mathHeavy(null), false);
+});
+
+test("explainPreset: 수식이 섞인 문단은 '쉽게 설명', 수식 위주는 '수식 풀이', 긴 선택은 3줄 요약 대신 '쉽게 설명', 한 단어는 '뜻'", () => {
+  const RUN = { id: "section-study:quiz", label: "퀴즈", match: s => (s && s.sectionId ? 1 : false), run: () => {} };
+  const all = [...ALL, RUN];
+  assert.equal(explainPreset({ isMath: false, latex: ["x^{2}", "x"], text: P1, wordCount: words(P1), sectionId: "S1" }, all).id, "easy");
+  assert.equal(explainPreset({ isMath: true, latex: ["x^{2}"], text: "$x^{2}$", wordCount: 1 }, all).id, "equation");
+  const tex = "\\sum_{i=1}^{N} g_i(x) E_i(x)";
+  assert.equal(explainPreset({ isMath: false, latex: [tex], text: `we have $${tex}$ where the gate is small`, wordCount: 8 }, all).id, "equation", "수식 위주 (산문 6단어)");
+  const long = Array(80).fill("word").join(" ");
+  assert.equal(explainPreset({ isMath: false, latex: [], text: long, wordCount: 80 }, all).id, "easy");
+  assert.equal(explainPreset({ isMath: false, latex: [], text: "gating network", wordCount: 2 }, all).id, "meaning");
+  assert.equal(explainPreset({ isMath: false, latex: [], text: "상위 두", wordCount: 2, inTranslation: true }, all).id, "easy", "번역문에는 한국어 뜻 카드 안 씀");
+  assert.equal(explainPreset({ isMath: false, latex: [], text: "gating", wordCount: 1 }, [RUN]).id, "easy", "남는 것이 없으면 기본 '쉽게 설명'");
 });
 
 // ---------- 답변 스타일 ----------
