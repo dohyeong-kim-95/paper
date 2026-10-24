@@ -178,6 +178,8 @@
     // 먼저 다 읽고 나서 씀
     const over = els.map(el => el.scrollWidth - el.clientWidth > 2);
     const wide = inl.map(m => {
+      // 숨은 수식(display:none, 번역 모드의 tr-hide 등)은 상자가 없어 좌표가 0 → 재지 않고 표시도 지움 (다시 보일 때 새로 잼)
+      if (!m.getClientRects().length) return false;
       if (m.classList.contains("rs-wide-math")) return m.getAttribute("data-rs-key") === key || m.scrollWidth - m.clientWidth > 2;
       const r = m.getBoundingClientRect();
       return r.right > hi || r.left < lo;

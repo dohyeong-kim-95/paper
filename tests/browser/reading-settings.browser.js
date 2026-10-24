@@ -345,6 +345,33 @@ test("긴 수식 정리: 표 안 수식 칸은 손대지 않고, 들여쓴 줄 �
   await page.context().close();
 });
 
+test("숨겼다 다시 보인 짧은 수식은 자기 줄로 내리지 않음 (숨은 동안 좌표 0을 넘침으로 보지 않음)", async browser => {
+  const page = await newPage(browser, { viewport: { width: 412, height: 800 } });
+  await open(page);
+  const cls = () => page.evaluate(() => [...document.getElementById("t-short").classList].filter(c => c.startsWith("rs-")).join(" "));
+  await page.evaluate(async () => {
+    document.querySelector("#S1\\.p1 .ltx_p").insertAdjacentHTML("beforeend",
+      ' <math id="t-short" display="inline" alttext="a_1+b_2+c_3+d_4+e_5+f_6+g_7+h_8"><mi>a</mi><mo>+</mo><mi>b</mi></math>');
+    await new Promise(r => setTimeout(r, 600));
+  });
+  assert.equal(await cls(), "");
+  await page.evaluate(async () => {
+    const p = document.querySelector("#S1\\.p1 .ltx_p");
+    p.style.display = "none";
+    await new Promise(r => setTimeout(r, 600));
+  });
+  assert.equal(await cls(), "");
+  await page.evaluate(async () => {
+    document.querySelector("#S1\\.p1 .ltx_p").style.display = "";
+    await new Promise(r => setTimeout(r, 600));
+  });
+  const r = await page.evaluate(() => getComputedStyle(document.getElementById("t-short")).display);
+  assert.equal(await cls(), "");
+  assert.notEqual(r, "block");
+  assert.deepEqual(page.errors, []);
+  await page.context().close();
+});
+
 test("넓은 화면 + 번역 '둘다': 원문·번역 문단이 나란히, '번역'으로 바꾸면 한 칸", async browser => {
   const page = await newPage(browser, {
     viewport: { width: 1280, height: 800 },
