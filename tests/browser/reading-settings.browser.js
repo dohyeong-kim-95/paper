@@ -310,6 +310,68 @@ test("화면 켜짐 유지: 켜면 요청, 탭이 다시 보이면 다시 요청
   await page.context().close();
 });
 
+test("긴 수식 정리: 표 안 수식 칸은 손대지 않고, 들여쓴 줄 안 수식도 내리고, 넓어지면 흐림 클래스까지 지움", async browser => {
+  const page = await newPage(browser, { viewport: { width: 320, height: 700 } });
+  await open(page);
+  const mk = (id, n) => `<math id="${id}" class="ltx_Math" display="inline" alttext="${"x+".repeat(20)}"><mrow>` +
+    Array.from({ length: n }, (_, i) => `<msub><mi>b</mi><mn>${i}</mn></msub><mo>+</mo>`).join("") + "</mrow></math>";
+  const cls = () => page.evaluate(() => Object.fromEntries(["S2.E2.m2", "t-list", "t-in"].map(id => {
+    const m = document.getElementById(id), r = m.getBoundingClientRect(), pr = document.getElementById("paper").getBoundingClientRect();
+    return [id, { cls: [...m.classList].filter(c => c.startsWith("rs-")).join(" "), out: r.right > pr.right + 1 }];
+  })));
+  await page.evaluate(async html => {
+    const cell = document.getElementById("S2.E2.m2").querySelector("mrow");
+    for (let i = 0; i < 30; i++) cell.insertAdjacentHTML("beforeend", `<mo>+</mo><msub><mi>c</mi><mn>${i}</mn></msub>`);
+    document.querySelector("#S1\\.I1\\.i1\\.p1 .ltx_p").insertAdjacentHTML("beforeend", " " + html[0]);
+    document.querySelector("#S1\\.p1 .ltx_p").insertAdjacentHTML("beforeend", " " + html[1]);
+    await new Promise(r => setTimeout(r, 600));
+  }, [mk("t-list", 9), mk("t-in", 12)]);
+  const a = await cls();
+  assert.equal(a["S2.E2.m2"].cls, "", JSON.stringify(a));
+  assert.match(a["t-list"].cls, /rs-wide-math/, JSON.stringify(a));
+  assert.equal(a["t-list"].out, false, JSON.stringify(a));
+  assert.match(a["t-in"].cls, /rs-wide-math/, JSON.stringify(a));
+  // 몇 번 다시 돌려도 그대로 (켰다 껐다 없음)
+  await page.evaluate(() => window.dispatchEvent(new Event("resize")));
+  await page.setViewportSize({ width: 321, height: 700 });
+  await sleep(500);
+  assert.match((await cls())["t-in"].cls, /rs-wide-math/);
+  await page.setViewportSize({ width: 900, height: 700 });
+  await sleep(500);
+  const b = await cls();
+  assert.equal(b["t-in"].cls, "", JSON.stringify(b));
+  assert.equal(b["S2.E2.m2"].cls, "", JSON.stringify(b));
+  assert.deepEqual(page.errors, []);
+  await page.context().close();
+});
+
+test("숨겼다 다시 보인 짧은 수식은 자기 줄로 내리지 않음 (숨은 동안 좌표 0을 넘침으로 보지 않음)", async browser => {
+  const page = await newPage(browser, { viewport: { width: 412, height: 800 } });
+  await open(page);
+  const cls = () => page.evaluate(() => [...document.getElementById("t-short").classList].filter(c => c.startsWith("rs-")).join(" "));
+  await page.evaluate(async () => {
+    document.querySelector("#S1\\.p1 .ltx_p").insertAdjacentHTML("beforeend",
+      ' <math id="t-short" display="inline" alttext="a_1+b_2+c_3+d_4+e_5+f_6+g_7+h_8"><mi>a</mi><mo>+</mo><mi>b</mi></math>');
+    await new Promise(r => setTimeout(r, 600));
+  });
+  assert.equal(await cls(), "");
+  await page.evaluate(async () => {
+    const p = document.querySelector("#S1\\.p1 .ltx_p");
+    p.style.display = "none";
+    await new Promise(r => setTimeout(r, 600));
+  });
+  assert.equal(await cls(), "");
+  await page.evaluate(async () => {
+    document.querySelector("#S1\\.p1 .ltx_p").style.display = "";
+    await new Promise(r => setTimeout(r, 600));
+  });
+  const r = await page.evaluate(() => getComputedStyle(document.getElementById("t-short")).display);
+  assert.equal(await cls(), "");
+  assert.notEqual(r, "block");
+  assert.deepEqual(page.errors, []);
+  await page.context().close();
+});
+
 test("넓은 화면 + 번역 '둘다': 원문·번역 문단이 나란히, '번역'으로 바꾸면 한 칸", async browser => {
   const page = await newPage(browser, {
     viewport: { width: 1280, height: 800 },
