@@ -215,23 +215,31 @@ test("펼친 채로 실패: 오류 상자·'다시'가 남음 (요약·방법론
   assert.deepEqual(page.errors, []);
 });
 
-test("그림 복제 속 캡션 링크는 글자만: 한 번 탭 = 그림으로 한 번 점프", async browser => {
+test("그림 복제 속 캡션 링크는 글자만: 한 번 탭 = 그림 열기 한 번", async browser => {
   const page = await newPage(browser);
   await page.evaluate(() => {
     const cap = document.getElementById("S2.F1").querySelector("figcaption");
     const a = document.createElement("a");
     a.className = "ltx_ref"; a.href = "#bib.bib1"; a.textContent = "[1]";
     cap.append(" ", a);
+    window.__openFig = 0;
+    document.addEventListener("paper:open-figure", () => window.__openFig++);
   });
   await page.click(".ov-toggle");
   await until(page, () => document.querySelector(".ov-text").dataset.final === "1");
   assert.equal(await page.evaluate(() => document.querySelectorAll(".ov-fig a").length), 0);
+  // 전체 번들에 figure-viewer가 있으면 크게 보기(paper:open-figure) 한 번, 없으면 원래 그림으로 점프 한 번
+  const viewer = await page.evaluate(() => PaperApp.has("figure-viewer"));
   await page.click(".ov-fig .ov-a");
-  await until(page, () => PaperNav.depth === 1);
-  // 부드러운 스크롤이 끝나면 원래 그림이 화면 안 (참고문헌으로 두 번째 점프가 없었음)
-  await until(page, () => { const t = document.getElementById("S2.F1").getBoundingClientRect().top; return t > 0 && t < innerHeight; });
+  if (viewer) {
+    await until(page, () => window.__openFig === 1);
+  } else {
+    await until(page, () => PaperNav.depth === 1);
+    // 부드러운 스크롤이 끝나면 원래 그림이 화면 안 (참고문헌으로 두 번째 점프가 없었음)
+    await until(page, () => { const t = document.getElementById("S2.F1").getBoundingClientRect().top; return t > 0 && t < innerHeight; });
+  }
   await sleep(300);
-  assert.equal(await page.evaluate(() => PaperNav.depth), 1);
+  assert.deepEqual(await page.evaluate(() => [window.__openFig, PaperNav.depth]), viewer ? [1, 0] : [0, 1]);
   assert.deepEqual(page.errors, []);
 });
 
