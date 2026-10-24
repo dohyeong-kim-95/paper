@@ -2,7 +2,7 @@
 /* 각주 본문은 줄 안에 펼치지 않음 (표시 숫자를 탭하면 peek) */
 #paper .ltx_note_outer { display: none; }
 #paper .ltx_note_mark { color: var(--accent); cursor: pointer; }
-/* 각주 표시는 키보드로도 열림 (ref-peek.js가 tabindex·role=button을 붙임) */
+/* 각주 표시는 키보드로도 열림 (ref-peek.js가 tabindex·aria-label을 붙임) */
 #paper .ltx_note_mark:focus-visible, .rp-body .ltx_note_mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
 /* 작은 참조 링크·각주 표시의 탭 영역 넓히기 (글자 위치는 그대로) */
 #paper a.ltx_ref, #paper .ltx_note_mark { padding: 6px 3px; margin: -6px -3px; }

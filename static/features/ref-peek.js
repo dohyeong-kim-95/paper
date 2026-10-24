@@ -362,18 +362,19 @@
   });
 
   // ---------- 각주 표시를 키보드·화면 읽기로도 (본문을 숨긴 각주의 유일한 입구) ----------
-  // 규칙 5: 본문 요소에는 속성만 (tabindex·role·aria-label). Enter/Space → click() → 위 탭 처리기 (peek 복제 안은 wireBody)
+  // 규칙 5: 본문 요소에는 속성만 (tabindex·aria-label). role=button은 달지 않음: 번역(.tr-ko.pr-ui) 같은 복제 안에서
+  // 기반 디스패처가 [role=button]을 기능 조작 요소로 보고 탭을 버리기 때문. Enter/Space → 바로 open()
   for (const m of paper.querySelectorAll(".ltx_note > .ltx_note_mark")) {
     if (!live(m) || !m.parentElement.querySelector(".ltx_note_content")) continue;
     m.setAttribute("tabindex", "0");
-    m.setAttribute("role", "button");
     m.setAttribute("aria-label", `각주 ${cleanTag(m.textContent)}`.trim());
   }
   document.addEventListener("keydown", e => {
     if ((e.key !== "Enter" && e.key !== " ") || e.altKey || e.ctrlKey || e.metaKey || !(e.target instanceof Element)) return;
-    const m = e.target.closest('.ltx_note_mark[role="button"]');
-    if (!m || !(inPaper(m) || m.closest(".rp-body"))) return;
+    const m = e.target.closest(".ltx_note_mark[tabindex]");
+    const note = m && !m.closest(".ltx_note_outer") && m.closest(".ltx_note");
+    if (!note || !note.querySelector(".ltx_note_content") || !(inPaper(note) || note.closest(".rp-body"))) return;
     e.preventDefault();
-    m.click();
+    open(note);
   });
 })();

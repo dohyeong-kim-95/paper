@@ -239,7 +239,7 @@ test("선택이 있어도 링크가 이김: 해시 이동 없이 peek, 문장 �
   assert.deepEqual(page.errors, []);
 });
 
-test("각주 표시는 키보드로도: tabindex·role=button·이름, Enter → peek, 닫으면 표시로 초점 복귀", async browser => {
+test("각주 표시는 키보드로도: tabindex·이름 (role 없음), Enter → peek, 닫으면 표시로 초점 복귀", async browser => {
   const page = await newPage(browser);
   await open(page);
   const mark = "#S1\\.p1 .ltx_note > .ltx_note_mark";
@@ -248,7 +248,7 @@ test("각주 표시는 키보드로도: tabindex·role=button·이름, Enter →
     return { tab: el.tabIndex, role: el.getAttribute("role"), label: el.getAttribute("aria-label"),
       inner: document.querySelector("#S1\\.p1 .ltx_note_content .ltx_note_mark").hasAttribute("tabindex") };
   }, mark);
-  assert.deepEqual(attrs, { tab: 0, role: "button", label: "각주 1", inner: false });
+  assert.deepEqual(attrs, { tab: 0, role: null, label: "각주 1", inner: false });
   await page.focus(mark);
   await page.keyboard.press("Enter");
   await until(page, () => document.querySelector(".rp-peek"));
@@ -260,10 +260,35 @@ test("각주 표시는 키보드로도: tabindex·role=button·이름, Enter →
   await until(page, m => document.activeElement === document.querySelector(m), mark);
   // 섹션 peek의 복제 안 표시도 Space로
   await page.evaluate(() => PaperApp.feature("ref-peek").open("S1"));
-  await page.focus(".rp-peek .rp-body .ltx_note_mark[role=button]");
+  // peek가 다음 프레임에 스스로 초점을 가져가므로, 그 뒤에 표시로 초점을 옮김
+  await until(page, () => document.activeElement && document.activeElement.classList.contains("rp-peek"));
+  await page.focus(".rp-peek .rp-body .ltx_note_mark[tabindex]");
   await page.keyboard.press(" ");
   await until(page, () => document.querySelectorAll(".pr-peek").length === 2);
   assert.deepEqual((await peeks(page)).map(x => x.title), ["1 Introduction", "각주 1"]);
+  assert.deepEqual(page.errors, []);
+});
+
+test("번역 복제(.tr-ko.pr-ui) 안의 각주 표시도 탭·키보드로 peek", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  await page.evaluate(() => {
+    const para = document.querySelector("#S1\\.p1");
+    const ko = document.createElement("p");
+    ko.className = "tr-ko pr-ui";
+    ko.append(PaperUI.cloneClean(para.querySelector(".ltx_note")));
+    para.after(ko);
+    ko.scrollIntoView({ block: "center" });
+  });
+  await page.click(".tr-ko .ltx_note_mark");
+  await until(page, () => document.querySelector(".rp-peek"));
+  assert.deepEqual((await peeks(page)).map(x => x.title), ["각주 1"]);
+  await page.keyboard.press("Escape");
+  await until(page, () => !document.querySelector(".pr-peek"));
+  await page.focus(".tr-ko .ltx_note_mark");
+  await page.keyboard.press("Enter");
+  await until(page, () => document.querySelector(".rp-peek"));
+  assert.deepEqual((await peeks(page)).map(x => x.title), ["각주 1"]);
   assert.deepEqual(page.errors, []);
 });
 
