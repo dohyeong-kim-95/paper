@@ -38,6 +38,8 @@
     height: calc(var(--vvh, 100vh) - env(safe-area-inset-top) - 32px); padding-top: 0; }
 }
 
-/* 답변 속 수식: 탭하면 LaTeX 복사 */
-.answer .katex { cursor: copy; border-radius: 4px; }
+/* 답변 속 수식: 탭하면 LaTeX 복사. cursor는 꼭 pointer: iOS WebKit은 document 리스너만 있는 요소에는 click을 보내지
+   않고, 조상 중 cursor: pointer(copy 등은 안 됨)나 자기 click 리스너가 있어야 보냄. 복사 표시는 hover 테두리로 */
+.answer .katex { cursor: pointer; border-radius: 4px; -webkit-tap-highlight-color: transparent; }
 .answer .katex:active { background: var(--bg); }
+@media (hover: hover) { .answer .katex:hover { box-shadow: 0 0 0 1px var(--line); } }

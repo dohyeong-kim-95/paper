@@ -130,7 +130,17 @@ test("본문 선택 복사: 인라인 수식은 $alttext$, 수식 표는 aligned
       const dt = new DataTransfer();
       const ev = new ClipboardEvent("copy", { clipboardData: dt, bubbles: true, cancelable: true });
       document.getElementById("paper").dispatchEvent(ev);
-      return { text: dt.getData("text/plain"), prevented: ev.defaultPrevented };
+      // text/html은 붙여넣는 앱처럼 파싱해서 구조만 비교
+      const html = dt.getData("text/html");
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      return {
+        text: dt.getData("text/plain"), prevented: ev.defaultPrevented, meta: html.startsWith('<meta charset="utf-8">'),
+        body: doc.body.textContent, divs: [...doc.body.querySelectorAll("div")].map(d => d.textContent),
+        math: doc.querySelectorAll("math").length, attrs: doc.body.querySelectorAll("[id], [class], [data-id]").length,
+        links: [...doc.querySelectorAll("a")].map(a => a.getAttribute("href")),
+        styled: [...doc.body.querySelectorAll("[style]")].map(e => [e.localName, e.getAttribute("style"), e.textContent.slice(0, 16)]),
+        rows: [...doc.querySelectorAll("table > tbody > tr")].map(tr => [...tr.cells].map(c => c.textContent)),
+      };
     };
     const para = document.getElementById("S2.p2");
     const whole = document.createRange();
@@ -144,14 +154,42 @@ test("본문 선택 복사: 인라인 수식은 $alttext$, 수식 표는 aligned
     inMath.selectNodeContents(document.querySelector("#S2\\.E3 math mi"));
     const plain = document.createRange();
     plain.selectNodeContents(document.querySelector("#S1\\.p3 .ltx_p"));
-    return { whole: copy(whole), inline: copy(inline), inMath: copy(inMath), plain: copy(plain) };
+    const links = document.createRange();
+    links.selectNodeContents(document.querySelector("#S1\\.p1 .ltx_p"));
+    const thm = document.createRange();
+    thm.selectNodeContents(document.getElementById("Thmtheorem1"));
+    // 공통 조상이 표의 한 행(tr)이어도 HTML은 table > tbody > tr로 감쌈 (고아 tr이면 붙여넣을 때 표가 사라짐)
+    const row = document.querySelector('[id="S2.T1"] tbody tr');
+    row.cells[1].insertAdjacentHTML("beforeend", '<math alttext="\\pm 0.1" display="inline"><mi>y</mi></math>');
+    const cells = document.createRange();
+    cells.setStart(row.cells[0].firstChild, 0);
+    cells.setEnd(row.cells[2].firstChild, 4);
+    return { whole: copy(whole), inline: copy(inline), inMath: copy(inMath), plain: copy(plain), links: copy(links), thm: copy(thm),
+      cells: copy(cells), href: location.origin + location.pathname };
   });
   assert.equal(r.whole.text, `training loss combines the task loss and a balancing term:\n\n$$${ALIGNED}$$\n\n`
     + "where $\\alpha$ is a small coefficient. The layer output is the gated sum\n\n$$" + GATED + "$$");
   assert.equal(r.inline.text, "grows as $x^{2}$ for a model of width $x$.");
   assert.equal(r.inMath.text, `$$${ALIGNED}$$`);
-  assert.deepEqual(r.plain, { text: "", prevented: false });
+  assert.deepEqual([r.plain.text, r.plain.prevented, r.plain.body], ["", false, ""]);
   assert.ok(r.whole.prevented && !/ℒ|α/.test(r.whole.text));
+  // text/html도 같이 (기본 복사를 막으면 브라우저 HTML이 사라짐): 수식은 LaTeX 글자, 블록 수식은 div 한 줄, id·class 없음
+  assert.ok(r.whole.meta);
+  assert.deepEqual(r.whole.divs, [`$$${ALIGNED}$$`, `$$${GATED}$$`]);
+  assert.deepEqual([r.whole.math, r.whole.attrs], [0, 0]);
+  assert.match(r.whole.body, /^training loss combines .*where \$\\alpha\$ is a small coefficient\. The layer output is the gated sum/s);
+  assert.equal(r.inline.body, "grows as $x^{2}$ for a model of width $x$.");
+  assert.equal(r.inMath.body, `$$${ALIGNED}$$`);
+  // 링크는 절대 주소로 (다른 앱에 붙여도 동작), 기울임은 인라인 스타일로
+  assert.ok(r.links.prevented && r.links.links.length >= 3, JSON.stringify(r.links.links));
+  assert.ok(r.links.links.every(u => /^https?:\/\//.test(u)), JSON.stringify(r.links.links));
+  assert.ok(r.links.links.includes(`${r.href}#bib.bib1`) && r.links.links.includes("https://github.com/example/sparse-moe"));
+  assert.ok(r.links.body.includes("grows as $x^{2}$ for a model of width $x$."));
+  assert.equal(r.thm.math, 0);
+  assert.deepEqual(r.thm.styled.filter(x => x[1] === "font-style:italic"), [["span", "font-style:italic", "If every expert "]]);
+  assert.ok(r.thm.body.includes("is minimized when $f_{i}=1/N$."), r.thm.body);
+  assert.equal(r.cells.text, "Dense 61.2$\\pm 0.1$ 40.1");
+  assert.deepEqual(r.cells.rows, [["Dense", "61.2$\\pm 0.1$", "40.1"]]);
   assert.deepEqual(page.errors, []);
 });
 
@@ -206,6 +244,25 @@ test("답변 속 KaTeX 탭 → LaTeX 복사 (블록 $$…$$, 인라인 $…$), �
     document.querySelector(".answer p .katex-html").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });
   assert.equal(await page.evaluate(() => window.__copied.length), 2);
+  // 실제 탭 순서: 끌어서 고른 뒤 수식을 탭해 선택을 푸는 탭 → 복사하지 않음 (누를 때 선택이 있었음)
+  await page.evaluate(() => getSelection().removeAllRanges());
+  await page.waitForTimeout(450); // justSelected() 창이 지나도록
+  const p = await page.locator(".answer p").boundingBox();
+  await page.mouse.move(p.x + 1, p.y + 4);
+  await page.mouse.down();
+  await page.mouse.move(p.x + 14, p.y + 4, { steps: 4 });
+  await page.mouse.up();
+  assert.ok(await page.evaluate(() => getSelection().toString().length > 0));
+  await page.locator(".answer p .katex-html").click();
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(() => window.__copied.length), 2);
+  // 선택이 풀린 뒤의 보통 탭은 다시 복사
+  await page.waitForTimeout(450);
+  await page.locator(".answer p .katex-html").click();
+  await until(page, () => window.__copied.length === 3);
+  // iOS WebKit은 document 리스너만으로는 click을 안 보냄 → 조상에 cursor: pointer가 있어야 함 (copy는 안 됨)
+  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll(".answer .katex, .answer .katex-html")].map(e => getComputedStyle(e).cursor)),
+    ["pointer", "pointer", "pointer", "pointer"]);
   assert.deepEqual(page.errors, []);
 });
 

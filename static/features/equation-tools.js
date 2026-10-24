@@ -257,11 +257,17 @@
   });
 
   // ---------- 답변 속 수식(KaTeX) 탭 → LaTeX 복사 (길게 누르기는 기본 선택에 양보) ----------
+  // 선택을 풀려고 누른 탭은 복사하지 않음: click 때는 이미 mousedown/touchstart가 선택을 풀었으므로
+  // 누르는 순간(capture pointerdown)에 선택이 있었는지 기억 (app.js의 downHadSel과 같은 방식)
+  const liveSel = () => { const s = document.getSelection(); return !!(s && !s.isCollapsed && s.toString().trim()); };
+  let downHadSel = false;
+  document.addEventListener("pointerdown", () => { downHadSel = liveSel() || PaperApp.justSelected(); }, true);
   document.addEventListener("click", e => {
+    const hadSel = downHadSel;
+    downHadSel = false;
     const k = e.target instanceof Element && e.target.closest(".answer .katex");
     if (!k || e.defaultPrevented || e.button || e.target.closest("a, button")) return;
-    const s = document.getSelection();
-    if (s && !s.isCollapsed && s.toString().trim()) return;
+    if (hadSel || liveSel() || PaperApp.justSelected()) return;
     const tex = k.querySelector('annotation[encoding="application/x-tex"]')?.textContent?.trim();
     if (tex) copyTex(tex, !k.closest(".katex-display"));
   });
@@ -275,34 +281,71 @@
     if (eq) return { tex: infoOf(eq).latex, display: true };
     return { tex: stripDisplay(alt(el)), display: el.getAttribute("display") === "block" };
   }
-  function copyParts(range) {
+  // text/html용 얕은 복제: 태그 + 링크·그림·표 칸 속성만 (id·class·data-*는 버림). 주소는 절대 주소로,
+  // 굵게·기울임은 LaTeXML이 class(ltx_font_bold 등)로 주므로 그 class나 계산된 스타일을 부모와 비교해 인라인으로
+  const KEEP_ATTR = ["alt", "title", "colspan", "rowspan", "width", "height"];
+  const isBold = el => el.classList.contains("ltx_font_bold") || Number(getComputedStyle(el).fontWeight) >= 600;
+  const isItalic = el => el.classList.contains("ltx_font_italic") || getComputedStyle(el).fontStyle === "italic";
+  function shallowCopy(n) {
+    const c = document.createElement(n.localName);
+    for (const a of KEEP_ATTR) if (n.hasAttribute(a)) c.setAttribute(a, n.getAttribute(a));
+    if (n.localName === "a" && n.href) c.setAttribute("href", n.href);
+    if (n.localName === "img" && (n.currentSrc || n.src)) c.setAttribute("src", n.currentSrc || n.src);
+    const p = n.parentElement, style = [];
+    if (isBold(n) && !(p && isBold(p))) style.push("font-weight:bold");
+    if (isItalic(n) && !(p && isItalic(p))) style.push("font-style:italic");
+    if (style.length) c.setAttribute("style", style.join(";"));
+    return c;
+  }
+
+  // 선택 범위 → {parts: assembleCopy 조각, html: 같은 내용의 정리된 DOM 조각}. 수식은 둘 다 LaTeX 글자로
+  function copyParts(range, d) {
+    const parts = [], html = document.createDocumentFragment();
+    const addMath = (el, out) => {
+      const p = mathPart(el);
+      parts.push(p);
+      if (!String(p.tex).trim()) return;
+      if (p.display) out.append(h("div", { text: wrapLatex(p.tex, d) }));
+      else out.append(wrapLatex(p.tex, d, true));
+    };
     let root = range.commonAncestorContainer;
     if (root.nodeType !== 1) root = root.parentElement;
     const whole = root && root.closest("math, " + EQ); // 수식 하나 안에서 고름 → 그 수식 전체
-    if (whole) return [mathPart(whole)];
-    const parts = [];
-    const visit = n => {
+    if (whole) { addMath(whole, html); return { parts, html }; }
+    // 공통 조상 자체(문단 등)는 껍데기 없이 내용만. 단 표·목록 안쪽(tr, li…)이면 바깥 표·목록까지 감싸서 고아 태그가 없게
+    let rootOut = html;
+    if (root && /^(thead|tbody|tfoot|tr|td|th|li|dt|dd)$/.test(root.localName)) {
+      const chain = [];
+      for (let el = root; el && el !== paperEl; el = el.parentElement) {
+        chain.unshift(el);
+        if (/^(table|ul|ol|dl)$/.test(el.localName)) break;
+      }
+      if (/^(table|ul|ol|dl)$/.test(chain[0].localName)) for (const el of chain) rootOut = rootOut.appendChild(shallowCopy(el));
+    }
+    const visit = (n, out) => {
       if (!range.intersectsNode(n)) return;
       if (n.nodeType === 3) {
         let t = n.data;
         if (n === range.endContainer) t = t.slice(0, range.endOffset);
         if (n === range.startContainer) t = t.slice(range.startOffset);
         parts.push({ text: t });
+        out.append(t);
         return;
       }
       if (n.nodeType !== 1 || SKIP_TAG.test(n.localName)) return;
       // 기능 UI는 빼고 번역(.tr-ko)은 포함, 숨긴 것(번역 모드의 원문 등)은 뺌 — 브라우저 기본 복사와 같게
       if ((n.classList.contains("pr-ui") && !n.classList.contains("tr-ko")) || hidden(n)) return;
-      if (n.localName === "math" || n.matches(EQ)) { parts.push(mathPart(n)); return; }
-      if (n.localName === "br") { parts.push({ br: true }); return; }
+      if (n.localName === "math" || n.matches(EQ)) { addMath(n, out); return; }
+      if (n.localName === "br") { parts.push({ br: true }); out.append(document.createElement("br")); return; }
       const block = BLOCK.test(n.localName);
+      const c = n === root ? rootOut : out.appendChild(shallowCopy(n));
       if (block) parts.push({ br: true });
-      for (let c = n.firstChild; c; c = c.nextSibling) visit(c);
+      for (let ch = n.firstChild; ch; ch = ch.nextSibling) visit(ch, c);
       if (block) parts.push({ br: true });
       else if (n.localName === "td" || n.localName === "th") parts.push({ text: " " });
     };
-    if (root) visit(root);
-    return parts;
+    if (root) visit(root, html);
+    return { parts, html };
   }
   document.addEventListener("copy", e => {
     if (e.defaultPrevented || !e.clipboardData) return;
@@ -310,11 +353,16 @@
     if (!s || s.isCollapsed || !s.rangeCount) return;
     const range = s.getRangeAt(0);
     if (!paperEl.contains(range.commonAncestorContainer)) return;
-    let parts;
-    try { parts = copyParts(range); } catch (x) { console.error("[equation-tools] copy", x); return; }
-    if (!parts.some(p => p.tex)) return; // 수식이 없으면 브라우저 기본 복사
-    const text = assembleCopy(parts, delim());
+    const d = delim();
+    let out;
+    try { out = copyParts(range, d); } catch (x) { console.error("[equation-tools] copy", x); return; }
+    if (!out.parts.some(p => p.tex)) return; // 수식이 없으면 브라우저 기본 복사
+    const text = assembleCopy(out.parts, d);
     if (!text) return;
+    // 기본 복사를 막으면 브라우저의 text/html도 사라지므로 직접 넣음 (서식 붙여넣기에서 링크·굵게·목록·그림 유지)
+    const box = document.createElement("div");
+    box.append(out.html);
+    e.clipboardData.setData("text/html", `<meta charset="utf-8">${box.innerHTML}`);
     e.clipboardData.setData("text/plain", text);
     e.preventDefault();
   });
