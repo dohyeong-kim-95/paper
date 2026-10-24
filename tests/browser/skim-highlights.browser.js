@@ -41,7 +41,11 @@ async function newPage(browser, { skim = () => JSONL } = {}) {
   });
   await ctx.route(u => u.href.startsWith(`${BASE}/api/skim-highlights/`), async r => {
     skims.push(r.request().url());
-    await r.fulfill({ status: 200, body: skim(skims.length), contentType: "text/plain; charset=utf-8", headers: { "X-Offline-Cacheable": "1" } });
+    const out = skim(skims.length), { body, delay = 0 } = typeof out === "string" ? { body: out } : out;
+    if (delay) await new Promise(res => setTimeout(res, delay));
+    try {
+      await r.fulfill({ status: 200, body, contentType: "text/plain; charset=utf-8", headers: { "X-Offline-Cacheable": "1" } });
+    } catch { /* 페이지가 닫힘 */ }
   });
   const page = await ctx.newPage();
   const errors = [];
@@ -55,21 +59,25 @@ async function open(page) {
 }
 const until = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 8000 });
 const hl = page => page.evaluate(() => ["goal", "novelty", "method", "result", "limit"].filter(f => CSS.highlights.has(`sk-${f}`)));
-// ⋯ 메뉴의 '핵심 문장'을 누름 (DOM 비교를 위해 한 번에 동기로)
-const toggleViaMenu = page => page.evaluate(() => {
+// ⋯ 메뉴의 '핵심 문장'을 누름: 꺼져 있으면 켬, 켜져 있으면 목록 peek (DOM 비교를 위해 한 번에 동기로)
+const viaMenu = page => page.evaluate(() => {
   const before = document.getElementById("paper").innerHTML;
   document.getElementById("bar-more").click();
   [...document.querySelectorAll(".pr-menu-item")].find(b => b.textContent.includes("핵심 문장")).click();
   return { same: document.getElementById("paper").innerHTML === before, marks: document.querySelectorAll("#paper mark").length };
 });
+const strip = page => page.evaluate(() => ({
+  hidden: document.getElementById("status-strip").hidden,
+  chip: document.querySelector('.pr-status[data-key="skim-highlights"]')?.dataset.state || null,
+}));
 
-test("유휴 시간에 받아 두고 점 표시, 메뉴로 켜면 역할별로 칠함 (DOM 그대로), 끄면 지움", async browser => {
+test("유휴 시간에 받아 두고 점 표시, 메뉴로 켜면 역할별로 칠함 (DOM 그대로), 켜져 있으면 메뉴가 목록을 열고 스위치로 끔", async browser => {
   const page = await newPage(browser);
   await open(page);
   await until(page, () => document.getElementById("bar-more").classList.contains("pr-dot"));
   assert.deepEqual(await hl(page), [], "기본은 꺼짐");
   assert.equal(page.skims.length, 1);
-  assert.deepEqual(await toggleViaMenu(page), { same: true, marks: 0 });
+  assert.deepEqual(await viaMenu(page), { same: true, marks: 0 });
   assert.deepEqual(await hl(page), ["goal", "novelty", "method", "result", "limit"]);
   const st = await page.evaluate(() => ({
     on: JSON.parse(localStorage.getItem("pr:skim-highlights")).on,
@@ -90,8 +98,22 @@ test("유휴 시간에 받아 두고 점 표시, 메뉴로 켜면 역할별로 �
     return c;
   });
   assert.match(dark, /rgba\(251, 191, 36/, "다크 모드 색");
-  assert.deepEqual(await toggleViaMenu(page), { same: true, marks: 0 });
+  // 켜져 있으면 메뉴 = 목록 peek (언제든 들어갈 길). '목록' 토스트는 닫아서 다른 토스트를 막지 않음
+  await viaMenu(page);
+  await page.waitForSelector(".sk-legend-peek");
+  assert.equal(await page.evaluate(() => document.getElementById("pr-toast").hidden), true, "'목록' 토스트 닫힘");
+  const off = await page.evaluate(() => {
+    const before = document.getElementById("paper").innerHTML;
+    document.querySelector(".sk-switch").click();
+    return {
+      same: document.getElementById("paper").innerHTML === before, marks: document.querySelectorAll("#paper mark").length,
+      sw: document.querySelector(".sk-switch").textContent,
+    };
+  });
+  assert.deepEqual(off, { same: true, marks: 0, sw: "형광펜 꺼짐" });
   assert.deepEqual(await hl(page), []);
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("pr:skim-highlights")).on), false);
+  assert.equal(await page.evaluate(() => document.getElementById("bar-more").classList.contains("pr-dot")), true);
   assert.deepEqual(page.errors, []);
 });
 
@@ -100,13 +122,7 @@ test("목록 peek: 역할 칩 개수·토글, 밀도 슬라이더, 섹션별 목
   await page.addInitScript(() => localStorage.setItem("pr:skim-highlights", JSON.stringify({ on: true })));
   await open(page);
   await until(page, () => CSS.highlights.has("sk-limit"));
-  await page.evaluate(() => {
-    document.getElementById("bar-more").click();
-    [...document.querySelectorAll(".pr-menu-item")].find(b => b.textContent.includes("핵심 문장")).click(); // 끔
-    document.getElementById("bar-more").click();
-    [...document.querySelectorAll(".pr-menu-item")].find(b => b.textContent.includes("핵심 문장")).click(); // 다시 켬 → 토스트 '목록'
-  });
-  await page.click("#pr-toast button");
+  await viaMenu(page); // 켜져 있음 → 목록
   await page.waitForSelector(".sk-legend-peek");
   const info = await page.evaluate(() => ({
     chips: [...document.querySelectorAll(".sk-chip")].map(c => c.textContent),
@@ -117,7 +133,7 @@ test("목록 peek: 역할 칩 개수·토글, 밀도 슬라이더, 섹션별 목
   assert.deepEqual(info.chips, ["목표 1", "새로움 1", "방법 1", "결과 1", "한계 1"]);
   assert.deepEqual(info.groups, ["초록", "1 Introduction", "2 Method"]);
   assert.equal(info.items, 5);
-  assert.match(info.note, /못 찾은 1개/);
+  assert.equal(info.note, "5개 · 누르면 그 위치로 이동 (본문에서 못 찾은 1개 제외)");
 
   await page.click('.sk-chip[data-sk="goal"]');
   assert.deepEqual(await hl(page), ["novelty", "method", "result", "limit"]);
@@ -209,10 +225,60 @@ test("실패 꼬리 → 상태 칩 오류 + '다시'(retry=1), 도착한 문장�
   await open(page);
   await page.waitForSelector('.pr-status[data-key="skim-highlights"][data-state="error"]');
   assert.deepEqual(await hl(page), ["goal"]);
+  await viaMenu(page);
+  await page.waitForSelector(".sk-legend-peek");
+  assert.equal(await page.evaluate(() => document.querySelector(".sk-note").textContent), "불러오지 못했습니다다시");
+  await page.evaluate(() => PaperUI.closeLayers(() => true));
   assert.equal(await page.evaluate(() => PaperApp.offlineUrls().length), 0, "실패한 응답은 오프라인 목록에 안 넣음");
   await page.click('.pr-status[data-key="skim-highlights"] button');
   await until(page, () => CSS.highlights.has("sk-limit"));
   assert.match(page.skims[1], /\?retry=1$/);
+  assert.deepEqual(page.errors, []);
+});
+
+test("꺼 둔 채 미리 받다 실패하면 조용히 (띠에 칩 없음), 켜면 retry=1로 다시 받아 칠함", async browser => {
+  const page = await newPage(browser, {
+    skim: n => (n === 1 ? { body: "\n\n[오류] 핵심 문장을 찾지 못했습니다 (응답 형식 오류)", delay: 700 } : JSONL),
+  });
+  await open(page);
+  for (let i = 0; i < 160 && !page.skims.length; i++) await page.waitForTimeout(50);
+  assert.equal(page.skims.length, 1, "유휴 시간에 미리 받기 시작");
+  await page.waitForTimeout(500); // 느린 생성 (400ms 넘음)
+  assert.deepEqual(await strip(page), { hidden: true, chip: null }, "생성 중에도 칩 없음");
+  await page.waitForTimeout(600); // 실패 도착
+  assert.equal(page.skims.length, 1);
+  assert.deepEqual(await strip(page), { hidden: true, chip: null }, "실패해도 칩 없음");
+  assert.equal(await page.evaluate(() => document.getElementById("bar-more").classList.contains("pr-dot")), false);
+  await viaMenu(page); // 켬 → 다시 생성
+  await until(page, () => CSS.highlights.has("sk-limit"));
+  assert.match(page.skims[1], /\?retry=1$/);
+  assert.deepEqual(page.errors, []);
+});
+
+test("되풀이된 문장은 앞 항목 다음 자리에, 이미 칠한 자리뿐인 문장은 '못 찾은' 수에 넣지 않음", async browser => {
+  const intro = "Large language models scale well, but dense computation grows";
+  const again = "We propose a sparse mixture of experts model that routes each token"; // 초록·서론에 모두 있음
+  const page = await newPage(browser, {
+    skim: () => [
+      { f: "goal", q: Q.goal, s: 3 }, { f: "method", q: intro, s: 2 }, { f: "novelty", q: again, s: 2 },
+      { f: "result", q: "routes each token to two experts", s: 2 }, // 두 자리 모두 이미 칠함 → 버림
+    ].map(o => JSON.stringify(o) + "\n").join(""),
+  });
+  await open(page);
+  await until(page, () => document.getElementById("bar-more").classList.contains("pr-dot"));
+  await viaMenu(page);
+  await page.click("#pr-toast button"); // '목록'
+  await page.waitForSelector(".sk-legend-peek");
+  const info = await page.evaluate(() => ({
+    groups: [...document.querySelectorAll(".sk-group")].map(g => [g.querySelector("h4").textContent, g.querySelectorAll(".sk-item").length]),
+    note: document.querySelector(".sk-note").textContent,
+    novelty: [...CSS.highlights.get("sk-novelty")].map(r => r.startContainer.parentElement.closest(".ltx_para, .ltx_abstract").id || "abstract"),
+    result: CSS.highlights.has("sk-result"),
+  }));
+  assert.deepEqual(info.groups, [["초록", 1], ["1 Introduction", 2]]);
+  assert.equal(info.note, "3개 · 누르면 그 위치로 이동");
+  assert.deepEqual(info.novelty, ["S1.p1"]);
+  assert.equal(info.result, false);
   assert.deepEqual(page.errors, []);
 });
 

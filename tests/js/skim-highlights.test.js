@@ -95,3 +95,25 @@ test("densityLabel, nextAfter, 역할별 설명 질문", () => {
   assert.equal(sk.nextAfter(items, 90), null);
   for (const f of sk.FACETS) assert.ok(sk.EXPLAIN[f.id], f.id);
 });
+
+test("findSpot: 앞 항목 다음부터 찾고, 이미 칠한 자리는 다음 등장 위치로, 모두 칠했으면 dup", () => {
+  const anchor = load("static/anchor.js");
+  const text = "Abstract. We route each token to two experts. Intro text here. "
+    + "We route each token to two experts in our model. Results improve a lot.";
+  const nm = anchor.normMap(text);
+  const loc = (q, from) => anchor.locateIn(text, q, { from, nm });
+  const S = "We route each token to two experts";
+  const first = text.indexOf(S), second = text.indexOf(S, first + 1);
+  // 처음 항목: 처음부터 → 초록
+  assert.equal(sk.findSpot(loc, S, 0, []).start, first);
+  // 앞 항목이 서론에 있으면 그 뒤의 되풀이(서론)부터
+  assert.equal(sk.findSpot(loc, S, text.indexOf("Intro"), []).start, second);
+  // 앞 항목 뒤에 없으면 처음부터 다시
+  assert.equal(sk.findSpot(loc, S, text.indexOf("Results"), []).start, first);
+  // 초록 자리를 이미 칠했으면(겹침 포함) 다음 등장 위치
+  const taken = [{ start: first, end: first + 20 }];
+  assert.equal(sk.findSpot(loc, "We route each token", 0, taken).start, second);
+  // 두 자리 모두 칠했으면 dup (못 찾은 문장과 구분)
+  assert.equal(sk.findSpot(loc, "route each token", 0, [taken[0], { start: second, end: second + S.length }]), "dup");
+  assert.equal(sk.findSpot(loc, "This sentence is not in the text", 0, []), null);
+});
