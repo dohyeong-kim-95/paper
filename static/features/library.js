@@ -354,12 +354,34 @@
     return out;
   }
 
+  // 저자 이름 칸의 줄들 (<br>마다, 표(\author{\begin{tabular}…})면 행마다 새 줄). 각주 표시(sup·math·\thanks)·
+  // 소속·이메일·표 칸 경계는 ', '로 ('Alice¹ Bob²'처럼 표시로만 나뉜 이름도 따로).
+  // 어느 줄까지 이름인지는 pickNameLines가 고름 (CVPR식 표: 이름 행 → 소속 행에서 멈춤)
+  function nameLines(el) {
+    const lines = [""];
+    const newLine = () => { if (lines[lines.length - 1].trim()) lines.push(""); };
+    const walk = node => {
+      for (const n of node.childNodes) {
+        if (n.nodeType === 3) lines[lines.length - 1] += n.data;
+        else if (n.nodeType === 1) {
+          if (n.localName === "br") lines.push("");
+          else if (n.matches("sup, math, .ltx_note, .ltx_contact, .ltx_role_affiliation, .ltx_role_email, .ltx_role_address")) lines[lines.length - 1] += ", ";
+          else if (n.matches(".ltx_tr, tr, .ltx_tabular, table")) { newLine(); walk(n); newLine(); }
+          else if (n.matches(".ltx_td, td, th")) { walk(n); lines[lines.length - 1] += ", "; }
+          else walk(n);
+        }
+      }
+    };
+    walk(el);
+    return lines;
+  }
+
   const paperHref = id => "/paper/" + String(id).split("/").map(encodeURIComponent).join("/");
   // entry-routes 딥링크 (#q=<인용 ≤120자>): 그 문장으로 이동
   const quoteHref = (id, quote) => paperHref(id) + (quote ? "#q=" + encodeURIComponent(String(quote).slice(0, 120)) : "");
 
   const api = {
-    STATUS, yearOf, cleanAuthors, pickNameLines, authorsLine, bibKey, toBibtex, toBibtexAll, unionTags, gistLine, applyAdd, setFields, touchOpen,
+    STATUS, yearOf, cleanAuthors, pickNameLines, nameLines, authorsLine, bibKey, toBibtex, toBibtexAll, unionTags, gistLine, applyAdd, setFields, touchOpen,
     addReadTime, mergeRecord, mergeImport, arxivIdOf, citeCounts, tintClass, filterRecords, recentRecords, allTags,
     collectNotes, noteKind, searchNotes, notesToMarkdown, formatDuration, relTime, makeBackup, parseImport, paperHref, quoteHref,
   };
@@ -471,24 +493,6 @@
   }
 
   // ---------- 논문 화면: 기록·헤더 메뉴·인용 표시·읽은 시간 ----------
-  // 저자 이름 칸의 줄들 (<br>마다 새 줄). 각주 표시(sup·math·\thanks)·소속·이메일은 빼고 그 자리를 ', '로
-  // ('Alice¹ Bob²'처럼 표시로만 나뉜 이름도 따로). 어느 줄까지 이름인지는 pickNameLines가 고름
-  function nameLines(el) {
-    const lines = [""];
-    const walk = node => {
-      for (const n of node.childNodes) {
-        if (n.nodeType === 3) lines[lines.length - 1] += n.data;
-        else if (n.nodeType === 1) {
-          if (n.localName === "br") lines.push("");
-          else if (n.matches("sup, math, .ltx_note, .ltx_contact, .ltx_role_affiliation, .ltx_role_email, .ltx_role_address")) lines[lines.length - 1] += ", ";
-          else walk(n);
-        }
-      }
-    };
-    walk(el);
-    return lines;
-  }
-
   function initPaper(id) {
     const paperEl = document.getElementById("paper");
     if (!paperEl) return;
@@ -555,14 +559,15 @@
     let lastAct = Date.now(), lastTick = Date.now(), pending = 0, hiddenAt = 0, sessionMs = 0;
     const act = () => { lastAct = Date.now(); };
     for (const ev of ["scroll", "pointerdown", "keydown", "wheel"]) window.addEventListener(ev, act, { passive: true, capture: true });
-    function tick() {
+    // wasVisible: 숨김 이벤트 때는 이미 'hidden'이지만 그 직전까지는 보였으므로 true로 넘김
+    function tick(wasVisible = document.visibilityState === "visible") {
       const now = Date.now();
-      if (document.visibilityState === "visible" && now - lastAct < IDLE) pending += Math.max(0, Math.min(now - lastTick, TICK * 2));
+      if (wasVisible && now - lastAct < IDLE) pending += Math.max(0, Math.min(now - lastTick, TICK * 2));
       lastTick = now;
     }
     // offer: 주기 기록일 때만 '완료로 표시'를 권함 (숨김·pagehide 때의 마지막 기록은 아무도 못 보는 토스트)
-    function flush(offer = false) {
-      tick();
+    function flush(offer = false, wasVisible) {
+      tick(wasVisible);
       if (pending < 1000) return;
       const ms = pending, session = sessionMs;
       pending = 0;
@@ -572,7 +577,7 @@
     }
     setInterval(() => { tick(); if (pending >= 30000) flush(true); }, TICK);
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") { flush(); hiddenAt = Date.now(); return; }
+      if (document.visibilityState === "hidden") { flush(false, true); hiddenAt = Date.now(); return; }
       lastTick = lastAct = Date.now();
       if (hiddenAt && Date.now() - hiddenAt > 10 * 60000) write(id, r => ({ ...(r || {}), opened: Date.now() })); // 오래 뒤 다시 봄 = 다시 연 것
     });

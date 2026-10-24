@@ -293,3 +293,32 @@ test("formatDuration / relTime / 링크", () => {
   assert.equal(L.quoteHref("2401.00001", ""), "/paper/2401.00001");
   assert.equal(L.quoteHref("1", "x".repeat(200)).length, "/paper/1#q=".length + 120);
 });
+
+// nameLines용 최소 가짜 DOM: matches는 쉼표로 나뉜 '.class'·태그 선택자만
+function fakeEl(tag, cls, kids) {
+  const classes = (cls || "").split(" ").filter(Boolean);
+  return {
+    nodeType: 1, localName: tag,
+    childNodes: (kids || []).map(k => (typeof k === "string" ? { nodeType: 3, data: k } : k)),
+    matches: sel => sel.split(",").map(x => x.trim()).some(x => (x[0] === "." ? classes.includes(x.slice(1)) : x === tag)),
+  };
+}
+const sp = (cls, kids) => fakeEl("span", cls, kids);
+
+test("nameLines: tabular 저자 칸은 행마다 줄, 칸마다 ', ' → 이름 행만 남음", () => {
+  const el = sp("ltx_personname", [sp("ltx_tabular", [sp("ltx_tbody", [
+    sp("ltx_tr", [sp("ltx_td", ["Alice Kim"]), sp("ltx_td", ["Bob Lee"])]),
+    "\n",
+    sp("ltx_tr", [sp("ltx_td", ["Stanford University"]), sp("ltx_td", ["MIT"])]),
+  ])])]);
+  const lines = L.nameLines(el);
+  assert.equal(lines.filter(l => l.trim()).length, 2);
+  const authors = L.cleanAuthors(L.pickNameLines(lines));
+  assert.deepEqual(authors, ["Alice Kim", "Bob Lee"]);
+  assert.equal(L.bibKey({ authors, id: "2401.00001" }), "kim2024");
+});
+
+test("nameLines: <br>·sup은 그대로 (Alice¹ Bob² \\ 소속)", () => {
+  const el = sp("ltx_personname", ["Alice Kim", fakeEl("sup", "", ["1"]), " Bob Lee", fakeEl("sup", "", ["2"]), fakeEl("br"), "Seoul National University"]);
+  assert.deepEqual(L.cleanAuthors(L.pickNameLines(L.nameLines(el))), ["Alice Kim", "Bob Lee"]);
+});
