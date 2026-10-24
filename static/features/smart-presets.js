@@ -7,6 +7,9 @@
   const TRANSLATE_Q = "한국어로 번역해줘 (전문 용어는 처음 한 번만 영어 병기, 번역문만)";
   const INTUITION_Q = "이 수식을 직관적으로 설명해줘: 기호 나열 대신 비유와 작은 숫자 예시로, 무엇을 계산하고 왜 필요한지.";
   const SUMMARY_Q = "이 부분을 3줄로 요약해줘: 한 줄에 한 문장, 핵심 주장 → 방법 → 결과 순서. 다른 말 없이 3줄만.";
+  // 번역문(.tr-ko)을 고르고 '번역': 한국어를 다시 번역하는 대신 영어 원문을 찾아 줌
+  const ORIGINAL_Q = "이 한국어 번역에 해당하는 영어 원문 문장을 주변 문단에서 찾아 그대로 보여 주고, 핵심 용어의 영어 표현을 짚어줘. 6줄 이내.";
+  const EASY = { id: "easy", label: "쉽게 설명", q: "이 부분을 쉽게 설명해줘" };
 
   const countWords = t => String(t || "").split(/\s+/).filter(Boolean).length;
   const wc = s => (typeof s.wordCount === "number" ? s.wordCount : countWords(s.text));
@@ -37,13 +40,34 @@
       .map(x => x.p);
   }
 
+  // 수식이 선택의 대부분인지: 수식만이거나, 수식 밖 단어가 4개 이하이거나, LaTeX 글자 수가 산문 글자 수 이상
+  // (산문에 기호 몇 개가 섞인 문단은 아님)
+  function mathHeavy(s) {
+    if (!s) return false;
+    if (s.isMath) return true;
+    const tex = (s.latex || []).filter(Boolean).map(String);
+    if (!tex.length) return false;
+    const prose = String(s.text || "").replace(/\$[^$]*\$/g, " ");
+    return countWords(prose) <= 4 || tex.join("").length >= prose.replace(/\s+/g, "").length;
+  }
+  // 원탭 '설명'이 물을 프리셋: 순위 그대로가 아니라 '설명'다운 것만. 번역·3줄 요약·run(퀴즈 등)은 건너뜀,
+  // 수식 풀이·직관은 수식이 대부분일 때만, 번역문(.tr-ko) 선택에는 '뜻'(한국어 뜻 사전 카드)을 쓰지 않음
+  function explainPreset(s, presets = SMART_PRESETS) {
+    const math = mathHeavy(s);
+    const skip = p => !!p.run || p.id === "translate" || p.id === "summary3"
+      || (!math && (p.id === "equation" || p.id === "intuition"))
+      || (!!s && !!s.inTranslation && p.id === "meaning");
+    return rankPresets(s, presets).find(p => !skip(p)) || EASY;
+  }
+
   // 답변 스타일 (pr:smart-presets:style)
   const DEFAULT_STYLE = { len: "normal", level: "grad", field: "", mode: "normal", lang: "ko" };
   const LEN = { short: "짧게(5문장 이내)", normal: "보통(3문단 이내)", long: "자세히(단계·예시 포함)" };
   const LEVEL = { ug: "학부생(전문 용어는 쉬운 말로 풀어서)", grad: "대학원생", expert: "전문가(기초 설명 생략)" };
   const MODE = { normal: "", guide: "학습 가이드(답을 다 주지 말고 핵심 힌트 뒤 이해 확인 질문 1개로 끝내기. 사용자가 답하면 맞은 점·틀린 점을 짚고 다음 단계로)" };
   const LANG = { ko: "", both: "한국어, 전문 용어는 영어 병기(예: 전문가 혼합(mixture of experts))", en: "English" };
-  const OWN_FORMAT = new Set(["meaning", "summary3", "translate"]); // 프리셋 자체에 형식·길이가 있음
+  const OWN_FORMAT = new Set(["meaning", "summary3", "translate", "original"]); // 프리셋 자체에 형식·길이가 있음
+  const TRANSLATION = new Set(["translate", "original"]); // 번역·원문 찾기: 독자 수준·답변 언어와 무관
 
   const cleanField = v => String(v ?? "").replace(/[<>]/g, "").replace(/\s+/g, " ").trim().slice(0, 60);
   function normalizeStyle(raw) {
@@ -52,13 +76,13 @@
     return { len: pick("len", LEN), level: pick("level", LEVEL), field: cleanField(r.field), mode: pick("mode", MODE), lang: pick("lang", LANG) };
   }
 
-  // 질문 끝에 붙는 <style> 줄. 뜻·3줄 요약·번역은 자기 형식이 있어 길이·모드 생략, 번역은 독자 수준도 생략
+  // 질문 끝에 붙는 <style> 줄. 뜻·3줄 요약·번역·원문은 자기 형식이 있어 길이·모드 생략, 번역·원문은 독자 수준도 생략
   function styleTag(style, presetId = null) {
-    const st = normalizeStyle(style), own = OWN_FORMAT.has(presetId), parts = [];
+    const st = normalizeStyle(style), own = OWN_FORMAT.has(presetId), tr = TRANSLATION.has(presetId), parts = [];
     if (!own) parts.push(`길이: ${LEN[st.len]}`);
-    if (presetId !== "translate") parts.push(`독자: ${LEVEL[st.level]}`);
+    if (!tr) parts.push(`독자: ${LEVEL[st.level]}`);
     if (!own && MODE[st.mode]) parts.push(`모드: ${MODE[st.mode]}`);
-    if (st.lang === "both" || (st.lang === "en" && presetId !== "meaning" && presetId !== "translate")) parts.push(`언어: ${LANG[st.lang]}`);
+    if (st.lang === "both" || (st.lang === "en" && presetId !== "meaning" && !tr)) parts.push(`언어: ${LANG[st.lang]}`);
     return parts.length ? `\n\n<style>${parts.join(" · ")}</style>` : "";
   }
   // 질문 훅: question에만 붙임 (기록에는 바뀐 질문이 저장 → 다음 턴의 앞부분이 바이트까지 같음). 이미 있으면 그대로
@@ -133,7 +157,7 @@
   }
 
   const api = {
-    SMART_PRESETS, MEANING_Q, DEFAULT_STYLE, VARS, rankPresets, equationQ, normalizeStyle, styleTag, applyStyle,
+    SMART_PRESETS, MEANING_Q, ORIGINAL_Q, DEFAULT_STYLE, VARS, rankPresets, mathHeavy, explainPreset, equationQ, normalizeStyle, styleTag, applyStyle,
     readerTag, withReader, fillTemplate, normalizeCustom, customPreset, sentenceSpans, spanAt, snapSpan,
   };
   if (typeof module !== "undefined") module.exports = api;
@@ -198,8 +222,7 @@
   }
 
   function explain(s) {
-    const top = rankPresets(s, PaperApp.presets()).find(p => !p.run && p.id !== "translate")
-      || { id: "easy", label: "쉽게 설명", q: "이 부분을 쉽게 설명해줘" };
+    const top = explainPreset(s, PaperApp.presets());
     const q = presetQ(top, s);
     const gloss = top.id === "meaning" && glossMarkdown(s.text);
     if (gloss) {
@@ -212,15 +235,31 @@
 
   const pairsNode = pairs => h("div", { class: "sp-pairs" }, pairs.map(p => h("div", { class: "sp-pair" },
     h("p", { class: "sp-ko", text: [].concat(p.ko ?? "").join(" ") }), h("p", { class: "sp-en", text: [].concat(p.en ?? "").join(" ") }))));
-  // 번역: section-translate가 이미 번역해 둔 문장 쌍이 선택을 덮으면 그것을 보여 줌 (Claude 호출 없음)
+  // 번역문(.tr-ko) 선택이 번역하는 영어 단위(문단·제목)의 글 (section-translate.unitFor, §6.1). 없으면 null
+  function sourceUnitText(s, tr) {
+    const ko = elOf(s.range && s.range.startContainer)?.closest(".tr-ko");
+    let unit = null;
+    try { unit = ko && tr && typeof tr.unitFor === "function" ? tr.unitFor(ko) : null; } catch { unit = null; }
+    const en = unit && unit.nodeType === 1 ? A.textOf(unit).replace(/\s+/g, " ").trim() : "";
+    return en || null;
+  }
+  // 번역: section-translate가 이미 번역해 둔 문장 쌍이 선택을 덮으면 그것을 보여 줌 (Claude 호출 없음).
+  // 수식만 고르면 번역할 글이 없으므로 '설명'(수식 풀이)으로, 번역문(.tr-ko)을 고르면 한국어를 다시 번역하지 않고 영어 원문
+  // (캐시된 쌍 → 없으면 그 번역의 영어 단위(unitFor) → 둘 다 없으면 원문 찾기 질문)
   async function translate(s) {
-    const q = presetQ(presetById("translate"), s);
+    if (s.isMath) { explain(s); return; }
+    const back = !!s.inTranslation, id = back ? "original" : "translate", label = back ? "원문" : "번역";
+    const q = back ? ORIGINAL_Q : presetQ(presetById("translate"), s);
     const tr = PaperApp.feature("section-translate");
-    const pairs = s.anchored && tr && typeof tr.lookup === "function" ? await withTimeout(() => tr.lookup(s), 500) : null;
+    let pairs = (s.anchored || back) && tr && typeof tr.lookup === "function" ? await withTimeout(() => tr.lookup(s), 500) : null;
+    if (back && !(Array.isArray(pairs) && pairs.length)) {
+      const en = sourceUnitText(s, tr);
+      pairs = en ? [{ ko: s.text, en }] : null;
+    }
     if (Array.isArray(pairs) && pairs.length) {
       PaperApp.openSheet(sheetOpts(s));
-      PaperApp.addLocalTurn({ shown: "번역", node: pairsNode(pairs), actions: [{ label: "더 자세히", onClick: () => PaperApp.ask(q, { presetId: "translate", label: "번역" }) }] });
-    } else PaperApp.openSheet({ ...sheetOpts(s), autoAsk: { q, label: "번역", id: "translate" } });
+      PaperApp.addLocalTurn({ shown: label, node: pairsNode(pairs), actions: [{ label: "더 자세히", onClick: () => PaperApp.ask(q, { presetId: id, label }) }] });
+    } else PaperApp.openSheet({ ...sheetOpts(s), autoAsk: { q, label, id } });
   }
 
   PaperApp.addSelectionAction({ id: "smart-presets:explain", label: "설명", order: 10, onClick: explain });
@@ -228,7 +267,8 @@
   PaperApp.addSelectionAction({ id: "smart-presets:snap", label: "문장 맞추기", order: 80, onClick: s => snap(s) });
 
   // ---------- 문장 단위 선택 (맞추기·문장 선택 모드) ----------
-  const SENT_BLOCK = "p, li, dd, figcaption, td, .ltx_para, .ltx_abstract";
+  // .ltx_abstract는 넣지 않음: 초록 글은 p.ltx_p 안에 있고, 넣으면 'Abstract' 제목 탭이 제목+첫 문장을 고름
+  const SENT_BLOCK = "p, li, dd, figcaption, td, .ltx_para";
   const elOf = n => (n && n.nodeType === 1 ? n : n && n.parentElement);
   const blockOf = n => { const b = elOf(n)?.closest(SENT_BLOCK); return b && A.root()?.contains(b) ? b : null; };
   const textAt = o => A.index().text.slice(o.start, o.end);
@@ -305,13 +345,28 @@
     applySentence();
     PaperUI.toast(sentenceOn ? "문장 선택 모드: 탭하면 문장, 두 번 탭하면 문단" : "문장 선택 모드를 껐습니다");
   }
+  // 탭인지: 끌어서 고르기·Shift 클릭이 끝날 때도 click이 오므로 누른 자리에서 움직였거나 수정 키가 있으면 탭이 아님.
+  // 선택 없이 시작한 누름이 끝났는데 선택이 생겼으면 브라우저가 고른 것(끌기·길게 누르기·더블클릭 단어) → 그대로 둠.
+  // 이미 고른 문장 위의 빠른 두 번째 탭(더블클릭)은 누를 때 선택이 있었으므로 문단 넓히기로 감
+  let press = null;
+  const hasLiveSel = () => { const s = document.getSelection(); return !!(s && s.rangeCount && !s.isCollapsed && s.toString().trim()); };
+  document.addEventListener("pointerdown", e => {
+    press = { x: e.clientX, y: e.clientY, slop: e.pointerType === "mouse" ? 6 : 10, hadSel: hasLiveSel() };
+  }, true);
+  function plainTap(e) {
+    if (e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return false;
+    if (!press) return true;
+    if (Math.abs(e.clientX - press.x) > press.slop || Math.abs(e.clientY - press.y) > press.slop) return false;
+    return press.hadSel || !hasLiveSel();
+  }
   PaperApp.addTapHandler({
     id: "smart-presets:sentence", priority: 20, allowWithSelection: true,
     test: e => {
-      if (!sentenceOn || PaperApp.isSheetOpen()) return false;
-      if (e.target.closest("a[href], .pr-ui, .tr-ko, table.ltx_equation, table.ltx_equationgroup")) return false;
+      if (!sentenceOn || PaperApp.isSheetOpen() || !plainTap(e)) return false;
+      if (e.target.closest("a[href], .pr-ui, .tr-ko, .ltx_title, table.ltx_equation, table.ltx_equationgroup")) return false;
       const off = A.offsetAtPoint(e.clientX, e.clientY);
-      return off == null ? false : { off, el: e.target };
+      // 문장 블록 밖(제목 등)이면 처리하지 않음 → 탭이 다른 처리기로 감
+      return off == null || !sentenceAt(off) ? false : { off, el: e.target };
     },
     handle: (e, hit) => {
       const now = Date.now(), prev = lastTap, quick = !!prev && (now - prev.t < DOUBLE_MS || e.detail >= 2);
