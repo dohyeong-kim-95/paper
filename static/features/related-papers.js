@@ -45,7 +45,13 @@
   // 탭 이름 + 개수 (모르면 이름만)
   const tabLabel = (name, n) => (n == null || n === "" ? name : `${name} ${n}`);
 
-  const api = { clip, authorsLine, metaLine, searchUrl, scholarQuery, scholarUrl, tabLabel };
+  // 서재 기록 → 배지 (읽기 진행은 status, opened는 연 시각일 뿐)
+  const libraryBadge = rec => {
+    if (!rec) return null;
+    const by = { done: "읽은 논문", reading: "읽는 중", "to-read": "읽을 목록" }[rec.status];
+    return by || (rec.star ? "즐겨찾기" : "열어 본 논문");
+  };
+  const api = { clip, authorsLine, metaLine, searchUrl, scholarQuery, scholarUrl, tabLabel, libraryBadge };
   if (typeof module !== "undefined") module.exports = api;
   if (typeof document === "undefined") return;
   if (document.body.dataset.page !== "paper") return;
@@ -147,8 +153,8 @@
   function itemEl(it, kind, cited) {
     const badges = [];
     if (kind !== "cited" && it.id && cited && cited.has(it.id)) badges.push(squash(`참고문헌 ${cited.get(it.id)}`));
-    const rec = it.id ? libraryRec(it.id) : null;
-    if (rec) badges.push(rec.opened ? "읽은 논문" : "읽을 목록");
+    const badge = it.id ? libraryBadge(libraryRec(it.id)) : null;
+    if (badge) badges.push(badge);
     const meta = metaLine(it, kind);
     return h("li", { class: "rel-item" },
       h("div", { class: "rel-title" }, h("span", { text: it.title || it.id || "" }), ...badges.map(b => h("span", { class: "rel-badge", text: b }))),
@@ -251,7 +257,10 @@
       const n = counts();
       TABS.forEach((t, i) => {
         const on = t.key === st.cur;
-        btns[i].textContent = tabLabel(t.label, n[t.key]);
+        // 이름과 개수를 두 줄로: 세 탭이 좁은 폰 폭에서도 잘리지 않게
+        btns[i].replaceChildren(h("span", { class: "rel-tab-name", text: t.label }),
+          n[t.key] == null ? "" : h("span", { class: "rel-tab-n", text: String(n[t.key]) }));
+        btns[i].setAttribute("aria-label", tabLabel(t.label, n[t.key]));
         btns[i].setAttribute("aria-selected", String(on));
         btns[i].tabIndex = on ? 0 : -1;
       });

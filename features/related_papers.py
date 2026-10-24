@@ -91,11 +91,21 @@ def build_query(terms: list[str], op: str = "AND") -> str:
     return f" {op} ".join(field(t) for t in terms)
 
 
+def valid_new_id(aid: str) -> bool:
+    """새 형식 arXiv id인지 (YYMM의 월 01~12, 1412까지는 번호 4자리, 1501부터 5자리)"""
+    if not NEW_ID.match(aid or ""):
+        return False
+    yymm, num = aid.split(".")
+    if not 1 <= int(yymm[2:]) <= 12:
+        return False
+    return len(num) == (4 if int(yymm) <= 1412 else 5)
+
+
 def item(e: dict) -> dict:
-    # parse_atom 항목 → 화면에 필요한 것만
+    # parse_atom 항목 → 화면에 필요한 것만. 옛 형식 id(hep-th/9901001)는 /paper/로 열 수 없으므로 id 없이 arXiv 링크만
     authors = e.get("authors") or []
     return {
-        "id": e["id"], "title": e.get("title") or "", "year": e.get("year"), "authors": authors[:3],
+        "id": e["id"] if NEW_ID.match(e.get("id") or "") else None, "title": e.get("title") or "", "year": e.get("year"), "authors": authors[:3],
         "n_authors": len(authors), "summary": (e.get("summary") or "")[:2000], "abs_url": e.get("abs_url"),
         "category": e.get("primary_category"),
     }
@@ -131,7 +141,7 @@ async def cited_items(arxiv_id: str) -> list[dict]:
     me, refs, seen = base_id(arxiv_id), [], set()
     for order, b in enumerate(idx["bib"].values()):
         aid = base_id(b.get("arxiv_id") or "")
-        if not aid or aid == me or aid in seen:
+        if not valid_new_id(aid) or aid == me or aid in seen:  # 오타 id 하나가 id_list 요청 전체를 망치지 않게
             continue
         seen.add(aid)
         refs.append({"aid": aid, "order": order, "bib": b, "cites": counts.get(b["id"], 0)})
@@ -140,6 +150,8 @@ async def cited_items(arxiv_id: str) -> list[dict]:
     if not refs:
         return []
     meta = {e["id"]: e for e in await core.arxiv_query(id_list=[r["aid"] for r in refs], max_results=len(refs))}
+    if not meta:  # 받은 id가 하나도 없음 = arXiv 이상 응답. 자리표시만 7일 캐시하지 않고 오류로
+        raise ValueError("arXiv id_list 응답이 비었습니다")
     out = []
     for r in refs:
         e = meta.get(r["aid"])

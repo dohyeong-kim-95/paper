@@ -1,9 +1,11 @@
 /* related-papers: 관련 논문 패널 · 관련 연구 peek (rel-) */
 .rel-body { word-break: keep-all; } /* 한국어는 어절 단위로 줄바꿈 (긴 영어 단어는 peek의 overflow-wrap이 처리) */
-.rel-tabs { display: flex; gap: 6px; overflow-x: auto; margin: 2px 0 6px; padding-bottom: 2px; scrollbar-width: none; }
-.rel-tabs::-webkit-scrollbar { display: none; }
-.rel-tab { flex: none; min-height: 34px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px;
-  background: var(--bg); color: var(--fg); font-size: 14px; }
+.rel-tabs { display: flex; gap: 6px; margin: 2px 0 6px; }
+.rel-tab { flex: 1 1 0; min-width: 0; min-height: 40px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--bg); color: var(--fg); font-size: 14px; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; line-height: 1.2; }
+.rel-tab-name, .rel-tab-n { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rel-tab-n { font-size: 12px; opacity: .8; }
 .rel-tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
 .rel-note { margin: 4px 0 6px; font-size: 13px; line-height: 1.45; color: var(--muted); }
 .rel-list { list-style: none; margin: 0; padding: 0; }

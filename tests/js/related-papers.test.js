@@ -51,3 +51,12 @@ test("tabLabel: 개수를 모르면 이름만", () => {
   assert.equal(rp.tabLabel("인용한 논문", "1000+"), "인용한 논문 1000+");
   assert.equal(rp.tabLabel("비슷한 논문", null), "비슷한 논문");
 });
+
+test("libraryBadge: 읽기 진행(status)으로, 연 적만 있으면 '열어 본 논문'", () => {
+  assert.equal(rp.libraryBadge(null), null);
+  assert.equal(rp.libraryBadge({ status: "done", opened: 1 }), "읽은 논문");
+  assert.equal(rp.libraryBadge({ status: "reading", opened: 1 }), "읽는 중");
+  assert.equal(rp.libraryBadge({ status: "to-read", opened: 1 }), "읽을 목록");
+  assert.equal(rp.libraryBadge({ star: true }), "즐겨찾기");
+  assert.equal(rp.libraryBadge({ opened: 1 }), "열어 본 논문");
+});

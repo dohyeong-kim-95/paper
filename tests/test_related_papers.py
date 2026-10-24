@@ -285,6 +285,28 @@ class PassageTests(Base):
         self.assertEqual(self.client.get(url).json(), d)
         self.assertEqual(len(self.http.calls), n)  # 메모리 캐시
 
+    def test_old_style_ids_are_not_openable(self):
+        old = SEARCH_XML.replace("http://arxiv.org/abs/2306.22222v1", "http://arxiv.org/abs/hep-th/9901001v1", 1)
+        self.http.route(is_search, old)
+        hits = self.client.get(f"/api/related-papers/{PAPER_ID}/search?t=routing").json()["hits"]
+        self.assertEqual([h["id"] for h in hits], ["2305.11111", None, "2307.33333"])
+        self.assertEqual(hits[1]["abs_url"], "https://arxiv.org/abs/hep-th/9901001")  # arXiv 링크는 남김
+
+    def test_valid_new_id(self):
+        for good in ("0704.0001", "1412.9999", "1501.00001", "2310.12345"):
+            self.assertTrue(rp.valid_new_id(good), good)
+        for bad in ("1910.1234", "2013.12345", "2300.12345", "1412.12345", "hep-th/9901001", ""):
+            self.assertFalse(rp.valid_new_id(bad), bad)
+
+    def test_empty_id_list_reply_is_error_not_cached(self):
+        self.http.route(is_ids, '<feed xmlns="http://www.w3.org/2005/Atom"></feed>')
+        self.http.route(is_search, SEARCH_XML)
+        d = self.client.get(f"/api/related-papers/{PAPER_ID}").json()
+        self.assertEqual(d["error"], rp.ARXIV_DOWN)
+        self.assertEqual(d["cited"], [])
+        self.assertTrue(d["similar"])
+        self.assertFalse(self.cache_file().exists())
+
     def test_search_errors(self):
         self.assertEqual(self.client.get(f"/api/related-papers/{PAPER_ID}/search?t=the").status_code, 400)
         self.assertEqual(self.client.get(f"/api/related-papers/{PAPER_ID}/search").status_code, 400)

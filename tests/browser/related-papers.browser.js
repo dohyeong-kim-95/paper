@@ -84,7 +84,7 @@ async function waitCalls(page, path, n, ms = 8000) {
   for (let t = 0; t < ms && count(page, path) < n; t += 50) await sleep(50);
   return count(page, path);
 }
-const tabs = page => page.$$eval(".rel-peek .rel-tab", bs => bs.map(b => [b.textContent, b.getAttribute("aria-selected")]));
+const tabs = page => page.$$eval(".rel-peek .rel-tab", bs => bs.map(b => [b.getAttribute("aria-label"), b.getAttribute("aria-selected")]));
 
 test("⋯ → 관련 논문: 세 탭, 앱에서 열기·arXiv 링크, 인용한 논문은 그 탭을 열 때만, Back으로 닫힘", async browser => {
   const page = await newPage(browser, defaultApi);
@@ -111,7 +111,11 @@ test("⋯ → 관련 논문: 세 탭, 앱에서 열기·arXiv 링크, 인용한 
   assert.deepEqual(badges, [null, "참고문헌 [1]"]);
 
   await page.click(".rel-peek .rel-tab[data-tab='citing']");
-  await until(page, () => document.querySelector(".rel-peek .rel-tab[data-tab='citing']").textContent === "인용한 논문 2");
+  await until(page, () => document.querySelector(".rel-peek .rel-tab[data-tab='citing']").getAttribute("aria-label") === "인용한 논문 2");
+  await page.setViewportSize({ width: 320, height: 800 });
+  assert.ok(await page.$eval(".rel-peek .rel-tabs", el => el.scrollWidth <= el.clientWidth &&
+    [...el.querySelectorAll(".rel-tab, .rel-tab span")].every(b => b.scrollWidth <= b.clientWidth + 1)), "좁은 폭에서도 세 탭이 잘리지 않음");
+  await page.setViewportSize({ width: 412, height: 800 });
   const citing = await page.$$eval(".rel-peek .rel-item", lis => lis.map(li =>
     [li.querySelector(".rel-meta").textContent, [...li.querySelectorAll(".rel-actions a")].map(a => a.textContent)]));
   assert.deepEqual(citing, [
