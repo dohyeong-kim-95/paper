@@ -76,7 +76,7 @@ test("mergeRecord: 나중에 바뀐(updated) 쪽의 상태·태그가 이김", (
 
 test("applyAdd: 준 필드만, 상태는 뒤로 안 감, star는 boolean일 때만, 태그 합집합, opened 유지", () => {
   let r = L.applyAdd(null, { id: "2401.04088v2", title: "T", authors: ["A. Kim"], status: "to-read" }, 10);
-  assert.deepEqual(r, { id: "2401.04088", title: "T", authors: ["A. Kim"], status: "to-read", updated: 10 });
+  assert.deepEqual(r, { id: "2401.04088", title: "T", authors: ["A. Kim"], status: "to-read", statusAt: 10, updated: 10 });
   r = { ...r, opened: 5, star: true };
   r = L.applyAdd(r, { id: "2401.04088", status: "reading", star: "yes", tags: ["MoE"] }, 20);
   assert.equal(r.status, "reading");
@@ -94,7 +94,7 @@ test("applyAdd: 준 필드만, 상태는 뒤로 안 감, star는 boolean일 때�
 
 test("setFields: 사용자는 상태를 되돌리거나 지울 수 있음, 태그 교체", () => {
   const r = L.setFields({ id: "1", status: "done", tags: ["a", "b"] }, { status: "to-read", tags: ["b"] }, 7);
-  assert.deepEqual(r, { id: "1", status: "to-read", tags: ["b"], updated: 7 });
+  assert.deepEqual(r, { id: "1", status: "to-read", statusAt: 7, tags: ["b"], updated: 7 });
   assert.equal(L.setFields(r, { status: null }).status, undefined);
   assert.equal(L.setFields(r, { status: "bogus" }).status, undefined);
 });
@@ -108,11 +108,91 @@ test("touchOpen / addReadTime: 열면 opened, 1분 넘게 읽으면 읽는 중",
   assert.equal(L.addReadTime({ status: "done" }, 999999).status, "done");
 });
 
+test("addReadTime: 1분을 넘기는 순간에만 '읽는 중', 사용자가 고른 '읽을 예정'·해제는 덮어쓰지 않음", () => {
+  // 이미 1분 넘게 읽은 논문에서 사용자가 '읽을 예정'을 고르거나 상태를 지움 → 다음 기록(30초마다·화면 떠날 때)에도 그대로
+  const picked = L.setFields({ id: "1", readMs: 600000, status: "reading" }, { status: "to-read" }, 50);
+  assert.equal(L.addReadTime(picked, 2000, 60).status, "to-read");
+  const cleared = L.setFields(picked, { status: null }, 70);
+  assert.equal(L.addReadTime(cleared, 2000, 80).status, undefined);
+  assert.equal(L.addReadTime(cleared, 2000, 80).readMs, 602000);
+  // 이번에 연 뒤 1분을 넘기면 (기록 전체는 이미 넘었어도) 한 번 '읽는 중'
+  const again = L.addReadTime(cleared, 15000, 90, { session: 50000 });
+  assert.equal(again.status, "reading");
+  assert.equal(again.statusAt, 90);
+  assert.equal(L.addReadTime(cleared, 15000, 90, { session: 65000 }).status, undefined, "이번에도 이미 넘었으면 그대로");
+  // 이 화면에서 사용자가 상태를 골랐으면 넘는 순간에도 그대로
+  assert.equal(L.addReadTime({ id: "1", readMs: 50000, status: "to-read" }, 15000, 90, { promote: false }).status, "to-read");
+  assert.equal(L.addReadTime({ id: "1", readMs: 50000 }, 15000, 90, { session: 0 }).status, "reading");
+});
+
+test("mergeRecord: 지운 상태도 가져오기에서 그대로, 상태는 나중에 정한 쪽", () => {
+  const cleared = L.setFields({ id: "1", status: "done", opened: 10 }, { status: null }, 50);
+  const old = { id: "1", status: "done", opened: 10, updated: 10 };
+  assert.equal(L.mergeRecord(old, cleared).status, undefined);
+  assert.equal(L.mergeRecord(cleared, old).status, undefined);
+  assert.equal(L.mergeImport({ "1": old }, { "1": cleared })["1"].status, undefined, "가져오기 정리를 거쳐도");
+  // 다른 기기에서 상태를 정한 적 없이 즐겨찾기만 바꾼 최근 기록은 상태를 지우지 않음
+  const done = L.setFields({ id: "1", opened: 10 }, { status: "done" }, 20);
+  const starred = L.setFields({ id: "1", opened: 30 }, { star: true }, 40);
+  const m = L.mergeRecord(done, starred);
+  assert.equal(m.status, "done");
+  assert.equal(m.star, true);
+  // 상태는 나중에 정한 쪽: 최근에 연 기록이라도 상태는 예전에 정했으면 다른 쪽 상태
+  const later = L.setFields({ id: "1", opened: 5 }, { status: "reading" }, 100);
+  const openedLater = L.touchOpen(L.setFields({ id: "1" }, { status: "to-read" }, 60), { id: "1" }, 200);
+  assert.equal(L.mergeRecord(later, openedLater).status, "reading");
+  assert.equal(L.mergeRecord(later, openedLater).opened, 200);
+});
+
+test("toBibtexAll: 겹치는 키에 a, b … 붙임", () => {
+  const recs = [
+    { id: "2401.00001", authors: ["Alice Kim"], title: "A" },
+    { id: "2402.00002", authors: ["Bob Kim"], title: "B" },
+    { id: "2403.00003", authors: ["Carol Kim"], title: "C" },
+    { id: "2301.00004", authors: ["Dan Kim"], title: "D" },
+    { id: "2404.00005", authors: ["Eve Lee"], title: "E" },
+  ];
+  const keys = [...L.toBibtexAll(recs).matchAll(/@misc\{([^,]+),/g)].map(m => m[1]);
+  assert.deepEqual(keys, ["kim2024", "kim2024a", "kim2024b", "kim2023", "lee2024"]);
+  const many = Array.from({ length: 30 }, (_, i) => ({ id: `2401.${String(i).padStart(5, "0")}`, authors: ["A Kim"] }));
+  const k2 = [...L.toBibtexAll(many).matchAll(/@misc\{([^,]+),/g)].map(m => m[1]);
+  assert.equal(new Set(k2).size, 30);
+  assert.equal(k2[26], "kim2024z");
+  assert.equal(k2[27], "kim2024aa");
+  assert.equal(L.toBibtexAll([]), "");
+});
+
 test("cleanAuthors: 한 칸의 여러 저자, 각주 기호, 이메일 제거", () => {
   assert.deepEqual(L.cleanAuthors(["Alice Kim, Bob Lee and Carol Park", "Dan Choi†", "x@y.com", "Alexander Anderson", "Alice Kim"]),
     ["Alice Kim", "Bob Lee", "Carol Park", "Dan Choi", "Alexander Anderson"]);
+  assert.deepEqual(L.cleanAuthors(["Hugo Touvron, \u2003Louis Martin, \u2003Kevin Stone, "]), ["Hugo Touvron", "Louis Martin", "Kevin Stone"],
+    "\\quad(넓은 공백)·건너뛴 각주 표시 자리로 나뉨");
+  assert.deepEqual(L.cleanAuthors(["Ana de la Cruz\u00a0Smith"]), ["Ana de la Cruz Smith"], "줄바꿈 없는 공백은 이름 안");
   assert.equal(L.authorsLine(["A", "B", "C", "D", "E"]), "A, B, C 외 2명");
   assert.equal(L.authorsLine([]), "");
+});
+
+test("pickNameLines: 저자 칸의 둘째 줄부터는 이름 줄만, 소속·이메일 줄에서 멈춤", () => {
+  // LLaMA식: 이름 여러 줄 → 빈 줄 → 소속
+  assert.deepEqual(L.pickNameLines([
+    "Hugo Touvron, , Thibaut Lavril, Gautier Izacard, Xavier Martinet ",
+    "Marie-Anne Lachaux, Timothee Lacroix, Baptiste Rozière, Naman Goyal",
+    "Edouard Grave, , Guillaume Lample, ",
+    "",
+    "Meta AI",
+  ]), [
+    "Hugo Touvron, , Thibaut Lavril, Gautier Izacard, Xavier Martinet ",
+    "Marie-Anne Lachaux, Timothee Lacroix, Baptiste Rozière, Naman Goyal",
+    "Edouard Grave, , Guillaume Lample, ",
+  ]);
+  // 흔한 모양: 이름 → 소속 → 이메일
+  assert.deepEqual(L.pickNameLines(["Alice Kim, , Bob Lee, ", ", Seoul National University", "alice@snu.ac.kr"]), ["Alice Kim, , Bob Lee, "]);
+  assert.deepEqual(L.pickNameLines(["Alice Kim", "Google DeepMind"]), ["Alice Kim"]);
+  assert.deepEqual(L.pickNameLines(["Alice Kim", "Bob Lee"]), ["Alice Kim"], "둘째 줄 이름 하나는 소속과 구별 못 해 뺌");
+  assert.deepEqual(L.pickNameLines(["Alice Kim, Bob Lee", "Hugging Face, Mistral AI"]), ["Alice Kim, Bob Lee"]);
+  assert.deepEqual(L.pickNameLines(["Alice Kim", "Carol van der Berg, Dan O'Neil"]), ["Alice Kim", "Carol van der Berg, Dan O'Neil"]);
+  assert.deepEqual(L.pickNameLines(["", " , ", "Alice Kim"]), ["Alice Kim"], "앞의 빈 줄은 건너뜀");
+  assert.deepEqual(L.cleanAuthors(L.pickNameLines(["Alice Kim, , Bob Lee", "Carol Park, Dan Choi", "MIT CSAIL"])), ["Alice Kim", "Bob Lee", "Carol Park", "Dan Choi"]);
 });
 
 test("arxivIdOf: 본문 글자·CoRR·링크, 오탐 없음", () => {
