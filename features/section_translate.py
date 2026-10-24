@@ -259,7 +259,8 @@ async def _generate(arxiv_id: str, paper: dict, todo: list[dict]) -> dict:
     by_id = {it["id"]: it for it in todo}
     got = {}
     for row in rows:
-        it = by_id.get(row.get("id")) if isinstance(row, dict) else None
+        rid = row.get("id") if isinstance(row, dict) else None
+        it = by_id.get(rid) if isinstance(rid, str) else None  # 목록·객체 id는 해시 불가 → 그 줄만 버림
         if it is None or it["id"] in got:
             continue
         try:

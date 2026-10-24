@@ -36,6 +36,15 @@ const UNITS = {
     fp: "largelanguagemodelsscalewellbutd",
   },
   "S1.p2#0": { en: ["Our contributions are as follows:"], ko: ["우리의 기여는 다음과 같습니다:"], ph: [], fp: "ourcontributionsareasfollows" },
+  // 각주 본문: 든 단락(S1.p1#0)과 함께 요청, 번역은 단락 번역문 안 각주 복제의 본문으로
+  "footnote1.note": { en: ["⟦0⟧⟦1⟧The router is trained jointly with the experts."], ko: ["⟦0⟧⟦1⟧라우터는 전문가들과 함께 학습됩니다."],
+    ph: [{ k: "tag", text: "1" }, { k: "tag", text: "1" }], fp: "11therouteristrainedjointlywitht" },
+  "S2.p1#0": {
+    en: ["The router computes gate scores as in Eq. (⟦0⟧).", "Figure ⟦1⟧ shows the architecture, Table ⟦2⟧ lists the results, and Section ⟦3⟧ describes the objective."],
+    ko: ["라우터는 식 (⟦0⟧)처럼 게이트 점수를 계산합니다.", "그림 ⟦1⟧은 구조를, 표 ⟦2⟧는 결과를, 절 ⟦3⟧은 목적 함수를 보여 줍니다."],
+    ph: [{ k: "ref", href: "#S2.E1", text: "1" }, { k: "ref", href: "#S2.F1", text: "1" }, { k: "ref", href: "#S2.T1", text: "1" }, { k: "ref", href: "#S2.SS1", text: "2.1" }],
+    fp: "theroutercomputesgatescoresasine",
+  },
   "S1.I1.i2.p1#0": {
     en: ["We show that the model matches a dense baseline on ⟦0⟧ benchmarks while using fewer FLOPs."],
     ko: ["더 적은 FLOPs로 ⟦0⟧개 벤치마크에서 밀집 기준 모델과 같은 성능을 보입니다."],
@@ -60,6 +69,7 @@ async function newPage(browser, { mode = "both", fail = false } = {}, ctx = null
   await ctx.route(`${BASE}/api/section-translate/**`, async r => {
     const body = JSON.parse(r.request().postData() || "{}");
     calls.push(body);
+    if (ctx.hold) await ctx.hold; // 응답을 붙잡아 두었다가 한꺼번에 (위쪽 번역이 늦게 도착하는 경우)
     if (ctx.fail) return r.fulfill({ status: 502, body: '{"detail":"x"}', contentType: "application/json" });
     const out = {};
     for (const id of body.ids) {
@@ -89,6 +99,7 @@ test("둘다: 보이기 전에 번역됨, 수식·인용·각주·링크 복제,
   await open(page);
   await until(page, sel => !!document.querySelector(sel), ko("S1.I1.i2.p1#0"));
   await until(page, () => !document.querySelector(".tr-pending"));
+  await until(page, () => !!document.querySelector('.tr-ko [data-tr-note="footnote1"] .ltx_note_content[lang="ko"]'));
   const r = await page.evaluate(() => {
     const p1 = document.getElementById("S1.p1").querySelector("p.ltx_p");
     const k = p1.nextElementSibling;
@@ -100,6 +111,9 @@ test("둘다: 보이기 전에 번역됨, 수식·인용·각주·링크 복제,
       maths: [...k.querySelectorAll("math")].map(m => m.getAttribute("alttext")),
       cite: !!k.querySelector('cite a.ltx_ref[href="#bib.bib1"]'),
       note: !!k.querySelector(".ltx_note .ltx_note_mark"),
+      // 각주 복제의 본문은 각주 단위 번역 (ref-peek가 이 .ltx_note_content를 보여 줌), 원문 각주는 그대로
+      noteKo: k.querySelector('.ltx_note[data-tr-note="footnote1"] .ltx_note_content')?.textContent,
+      noteEn: document.getElementById("footnote1").querySelector(".ltx_note_content").textContent,
       link: !!k.querySelector('a.ltx_ref[href="https://github.com/example/sparse-moe"]'),
       ids: document.querySelectorAll(".tr-ko [id]").length,
       belowFold: below.getBoundingClientRect().top > innerHeight,
@@ -113,6 +127,7 @@ test("둘다: 보이기 전에 번역됨, 수식·인용·각주·링크 복제,
   });
   assert.deepEqual(r, {
     sibling: true, sentences: 4, maths: ["x", "x^{2}"], cite: true, note: true, link: true, ids: 0, belowFold: true,
+    noteKo: "11라우터는 전문가들과 함께 학습됩니다.", noteEn: "11The router is trained jointly with the experts.",
     title: [true, "1 서론"], english: true, pending: 0, korean: false, index: false, mode: [true, "true"],
   });
   assert.ok(page.calls.length >= 1 && page.calls.every(c => c.ids.length <= 6 || c.ids.every(i => i.endsWith(".title"))), JSON.stringify(page.calls));
@@ -285,7 +300,134 @@ test("끝까지 스크롤하면 서버와 같은 단위 id만 요청 (클라이�
   const asked = [...new Set(page.calls.flatMap(c => c.ids))].sort();
   const extra = asked.filter(id => !SERVER.includes(id)), missing = SERVER.filter(id => !asked.includes(id));
   assert.deepEqual(extra, [], `서버에 없는 id: ${extra}`);
-  assert.ok(missing.every(id => id === "footnote1.note"), `요청 안 한 단위: ${missing}`); // 각주는 ref-peek가 숨기면 요청 안 함
+  assert.deepEqual(missing, [], `요청 안 한 단위: ${missing}`); // 각주 본문도 (관찰하지 않고 든 단락과 함께)
+  assert.deepEqual(page.errors, []);
+  await page.context().close();
+});
+
+// 탐침 줄(상단 띠 아래 + 8px)을 id 요소 바로 위 단락 사이 여백에 둠. 여백을 못 찾으면 null
+const probeInGapAbove = (page, id) => page.evaluate(t => {
+  const probe = () => document.getElementById("top-stack").getBoundingClientRect().bottom + 8;
+  const el = document.getElementById(t);
+  window.scrollBy(0, el.getBoundingClientRect().top - probe());
+  const top = el.getBoundingClientRect().top;
+  for (let y = Math.floor(top) - 1; y > top - 40; y--) {
+    const e = document.elementFromPoint(innerWidth / 2, y);
+    if (e && e.matches("section, .ltx_para, #paper")) {
+      window.scrollBy(0, y - probe());
+      const hit = document.elementFromPoint(innerWidth / 2, probe());
+      return { hit: hit.matches("section, .ltx_para, #paper"), top: el.getBoundingClientRect().top };
+    }
+  }
+  return null;
+}, id);
+
+test("탐침 줄이 단락 사이 여백이어도 모드를 바꾸면 읽던 단락이 제자리 (둘다 → 번역 → 원문)", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  await until(page, sel => !!document.querySelector(sel), ko("S1.p2#0"));
+  await page.waitForFunction(() => !document.querySelector('.pr-status[data-state="loading"], .pr-status[data-state="ready"], .tr-pending'), null, { timeout: 8000 });
+  for (const step of ["both→ko", "ko→orig"]) {
+    const g = await probeInGapAbove(page, "S1.p2");
+    assert.ok(g && g.hit, `${step}: 여백을 못 찾음 ${JSON.stringify(g)}`);
+    await page.click('.pr-bar-btn[data-id="section-translate"]');
+    const after = await page.evaluate(() => document.getElementById("S1.p2").getBoundingClientRect().top);
+    assert.ok(Math.abs(after - g.top) <= 3, `${step}: S1.p2 ${g.top} → ${after}`);
+  }
+  assert.deepEqual(page.errors, []);
+  await page.context().close();
+});
+
+test("번역 모드: 탐침 줄이 여백일 때 위쪽 번역이 늦게 도착해도 읽던 단락이 제자리", async browser => {
+  const page = await newPage(browser, { mode: "ko" });
+  let release;
+  page.ctx.hold = new Promise(r => { release = r; });
+  await open(page);
+  await page.evaluate(() => document.getElementById("S1.p2").scrollIntoView({ block: "start" }));
+  await until(page, () => !!document.querySelector(".tr-pending")); // 붙잡힌 첫 묶음들 (S1.p1은 아직 영어)
+  const g = await probeInGapAbove(page, "S1.p2");
+  assert.ok(g && g.hit, `여백을 못 찾음 ${JSON.stringify(g)}`);
+  page.ctx.hold = null;
+  release();
+  await until(page, sel => !!document.querySelector(sel) && !document.querySelector(".tr-pending"), ko("S1.p2#0"));
+  const r = await page.evaluate(() => [document.getElementById("S1.p2").getBoundingClientRect().top,
+    !!document.querySelector('.tr-ko[data-unit="S1.p1#0"]'), getComputedStyle(document.getElementById("S1.p1").querySelector("p")).display]);
+  assert.deepEqual(r.slice(1), [true, "none"]);
+  assert.ok(Math.abs(r[0] - g.top) <= 3, `S1.p2 ${g.top} → ${r[0]}`);
+  assert.deepEqual(page.errors, []);
+  await page.context().close();
+});
+
+test("lookup: 번역 쌍이 선택을 다 덮을 때만 (수식 블록·단위 밖으로 걸친 선택은 null), 번역문 안 선택은 그 문장", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  await page.evaluate(() => document.getElementById("S2.p1").scrollIntoView({ block: "center" }));
+  await until(page, sel => !!document.querySelector(sel), ko("S2.p1#0"));
+  const r = await page.evaluate(async () => {
+    const st = PaperApp.feature("section-translate"), A = PaperAnchor;
+    const ask = async range => { PaperApp.selectRange(range); const v = await st.lookup(PaperApp.sel()); document.getSelection().removeAllRanges(); return v; };
+    const p = document.getElementById("S2.p1").querySelector("p.ltx_p"), eq = document.getElementById("S2.E1");
+    const mathOnly = document.createRange();
+    mathOnly.selectNode(eq.querySelector("math"));
+    const intoEq = document.createRange();
+    intoEq.setStart(p.firstChild, 4);
+    intoEq.setEndAfter(eq.querySelector("math"));
+    const s = document.querySelector('.tr-ko[data-unit="S2.p1#0"] .tr-s[data-i="1"]');
+    const koRange = document.createRange();
+    koRange.setStart(s.firstChild, 0);
+    koRange.setEnd(s.firstChild, 2);
+    const koOut = document.createRange();
+    koOut.setStart(s.firstChild, 0);
+    koOut.setEnd(eq.querySelector("math"), 0);
+    return {
+      mathOnly: await ask(mathOnly), intoEq: await ask(intoEq),
+      inside: await ask(A.findQuote("shows the architecture", { root: p })),
+      both: (await ask(A.findQuote("as in Eq. (1). Figure 1 shows", { root: p })) || []).length,
+      ko: await ask(koRange), koOut: await ask(koOut),
+    };
+  });
+  assert.deepEqual(r, {
+    mathOnly: null, intoEq: null,
+    inside: [{ en: "Figure 1 shows the architecture, Table 1 lists the results, and Section 2.1 describes the objective.", ko: "그림 1은 구조를, 표 1는 결과를, 절 2.1은 목적 함수를 보여 줍니다." }],
+    both: 2,
+    ko: [{ en: "Figure 1 shows the architecture, Table 1 lists the results, and Section 2.1 describes the objective.", ko: "그림 1은 구조를, 표 1는 결과를, 절 2.1은 목적 함수를 보여 줍니다." }],
+    koOut: null,
+  });
+  assert.deepEqual(page.errors, []);
+  await page.context().close();
+});
+
+test("'다시 번역'은 실패 칩의 '다시'·오프라인 뒤 재전송에도 force를 유지", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  await until(page, sel => !!document.querySelector(sel), ko("S1.p2#0"));
+  const redo = async () => {
+    await page.evaluate(() => document.querySelector('.tr-ko[data-unit="S1.p2#0"] .tr-s').scrollIntoView({ block: "center" }));
+    if (!await page.$('.tr-ko[data-unit="S1.p2#0"] .tr-en')) await page.click('.tr-ko[data-unit="S1.p2#0"] .tr-s');
+    await page.click('.tr-ko[data-unit="S1.p2#0"] .tr-en-tools button:not(.pr-fb)');
+  };
+  // 1) 서버 실패 → 그 단위의 '번역 실패 · 다시' → force로 다시
+  page.ctx.fail = true;
+  let n = page.calls.length;
+  await redo();
+  const chip = `${ko("S1.p2#0")} + .tr-err button`; // 이 단위의 칩 (S2.p2#1의 칩과 구분)
+  await until(page, sel => !!document.querySelector(sel), chip);
+  page.ctx.fail = false;
+  UNITS["S1.p2#0"].ko = ["기여는 다음과 같습니다:"];
+  await page.click(chip);
+  await until(page, sel => document.querySelector(sel)?.textContent === "기여는 다음과 같습니다:", ko("S1.p2#0"));
+  const mine = from => page.calls.slice(from).filter(c => c.ids.includes("S1.p2#0")); // 스크롤로 다른 단위 요청도 섞임
+  assert.deepEqual(mine(n), [{ ids: ["S1.p2#0"], force: true }, { ids: ["S1.p2#0"], force: true }]);
+  // 2) 오프라인 → 다시 온라인이 되면 force로 다시
+  UNITS["S1.p2#0"].ko = ["이 논문의 기여:"];
+  n = page.calls.length;
+  await page.context().setOffline(true);
+  await redo();
+  await page.waitForTimeout(200);
+  await page.context().setOffline(false);
+  await until(page, sel => document.querySelector(sel)?.textContent === "이 논문의 기여:", ko("S1.p2#0"));
+  assert.ok(mine(n).length >= 1 && mine(n).every(c => c.force === true && c.ids.join() === "S1.p2#0"), JSON.stringify(mine(n)));
+  UNITS["S1.p2#0"].ko = ["우리의 기여는 다음과 같습니다:"];
   assert.deepEqual(page.errors, []);
   await page.context().close();
 });

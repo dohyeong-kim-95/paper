@@ -95,7 +95,7 @@
   const saved = store.get(MODE_KEY, "orig");
   let mode = MODES.includes(saved) ? saved : "orig";
 
-  let units = null; // [{id, kind, el, src, len, h, fp, state, ko, chip, revealed, solo}]
+  let units = null; // [{id, kind, el, src, len, h, fp, state, ko, chip, revealed, solo, force, notes, host, noteId}]
   const byId = new Map(), unitOfEl = new WeakMap(), koOf = new WeakMap();
   const recs = new Map(); // 단위 id → {s: [[en, ko]], ph} | {skip: true} (지금 본문과 해시가 같은 것만)
   const wanted = new Set();
@@ -144,6 +144,14 @@
       const note = c.closest(".ltx_note");
       if (!note || !note.id || c.closest(".ltx_bibliography")) continue;
       add(`${note.id}.note`, "note", c);
+      byId.get(`${note.id}.note`).noteId = note.id;
+    }
+    // 각주 본문은 관찰하지 않고 그 각주가 든 단위(단락·캡션·제목)와 함께 요청 (ref-peek가 .ltx_note_outer를 숨기면
+    // 본문 자체는 보이지 않음). 번역은 단락 번역문 안 각주 복제에 들어감 (koNote). 든 단위가 없는 각주(표 칸 등)는 번역 안 함
+    for (const u of units) {
+      if (u.kind !== "note") continue;
+      const host = unitAt(u.el.parentElement);
+      if (host) { u.host = host; (host.notes = host.notes || []).push(u); }
     }
     return units;
   }
@@ -206,53 +214,85 @@
     if (p.k === "eq") { const t = p.id && document.getElementById(p.id); return t ? UI.cloneClean(t) : null; }
     return h("span", { text: p.k === "img" ? "" : p.text || "" });
   }
-  function fill(el, text, ph, srcs) {
+  // koNotes: 한국어 쪽(번역문·각주 번역)이면 각주 복제의 본문도 한국어로. 영어 원문 줄(.tr-en)은 원문 그대로
+  function fill(el, text, ph, srcs, koNotes = false) {
     for (const part of restorePlaceholders(text, ph.map((_, i) => i))) {
       if (typeof part === "string") el.append(part);
       else {
         const node = srcs[part] ? UI.cloneClean(srcs[part]) : fallbackAtom(ph[part]);
-        if (node) el.append(node);
+        if (!node) continue;
+        if (koNotes && ph[part].k === "note" && ph[part].id && node.classList && node.classList.contains("ltx_note")) koNote(node, ph[part].id);
+        el.append(node);
       }
     }
     return el;
   }
+  // 번역문 안 각주 복제의 본문을 그 각주 단위의 번역으로 (각주 표시를 탭하면 ref-peek가 가장 가까운 .ltx_note의
+  // .ltx_note_content를 보여 주므로 번역문에서는 한국어 각주가, ref-peek가 없으면 원문처럼 그 자리에 보임)
+  function koNote(clone, noteId) {
+    clone.dataset.trNote = noteId;
+    const nu = byId.get(`${noteId}.note`), rec = nu && recs.get(nu.id);
+    const c = clone.querySelector(".ltx_note_content");
+    if (!c || !rec || !rec.s || !checkPlaceholders(rec.s.map(p => p[1]), rec.ph.length)) return;
+    const srcs = resolveAtoms(nu, rec.ph);
+    c.replaceChildren();
+    rec.s.forEach((pair, i) => { if (i) c.append(" "); fill(c, pair[1], rec.ph, srcs, true); });
+    c.lang = "ko";
+  }
+  function refreshNotes(nu) {
+    for (const c of paper.querySelectorAll(".tr-ko [data-tr-note]")) if (c.dataset.trNote === nu.noteId) koNote(c, nu.noteId);
+  }
   function buildKo(u, rec) {
     const srcs = resolveAtoms(u, rec.ph);
-    const tag = u.kind === "title" ? u.el.localName : u.kind === "note" ? "span" : "div";
+    const tag = u.kind === "title" ? u.el.localName : "div";
     const ko = h(tag, { class: `tr-ko tr-${u.kind}`, lang: "ko", dataset: { unit: u.id } });
     rec.s.forEach((pair, i) => {
       if (i) ko.append(" ");
-      ko.append(fill(h("span", { class: "tr-s", dataset: { i } }), pair[1], rec.ph, srcs));
+      ko.append(fill(h("span", { class: "tr-s", dataset: { i } }), pair[1], rec.ph, srcs, true));
     });
     return ko;
   }
 
   // ---------- 화면 위치 유지: 뷰포트 위쪽에서 높이가 바뀌어도 읽던 곳이 밀리지 않게 (iOS는 scroll anchoring 없음) ----------
-  function unitAt(el) {
+  // skipNotes: 각주 본문 단위 대신 그 각주가 든 단위 (각주 번역은 따로 그리지 않고 단락 번역문 안에 들어감)
+  function unitAt(el, skipNotes = false) {
     for (let e = el; e && e !== paper; e = e.parentElement) {
       const u = unitOfEl.get(e) || (e.classList.contains("tr-ko") && koOf.get(e));
-      if (u) return u;
+      if (u && !(skipNotes && u.kind === "note")) return u;
     }
     return null;
   }
   const shown = el => !!el && el.isConnected && el.getClientRects().length > 0;
+  // 기준 요소: 탐침 줄(상단 띠 바로 아래)에 걸치거나 그 아래에서 처음 만나는 번역 단위·번역문·잎 블록(수식 표, 그림 등).
+  // 단락 사이 여백에선 section·.ltx_para·#paper 같은 상자가 잡히는데, 안쪽이 바뀌어도 상자의 top은 그대로라 기준이 못 됨
+  // → 단위를 품은 상자는 건너뛰고 12px씩 아래로 다시 찾음. 대기 칩(.tr-state)은 fn()이 지우므로 건너뜀
+  const HOLDS_UNITS = "p.ltx_p, .ltx_title, figcaption, .tr-ko, .tr-state";
+  function anchorAt(y0) {
+    const x = window.innerWidth / 2, end = Math.min(window.innerHeight, y0 + 480);
+    for (let y = Math.max(0, y0); y < end; y += 12) {
+      const hit = document.elementFromPoint(x, y);
+      if (!hit || !paper.contains(hit) || hit.closest(".tr-state")) continue;
+      const u = unitAt(hit, true);
+      if (u) return { u, ko: !!hit.closest(".tr-ko") }; // 영어·한국어 중 보던 쪽을 먼저 (둘다 모드)
+      if (!hit.querySelector(HOLDS_UNITS)) return { el: hit };
+    }
+    return null;
+  }
   function keepPlace(fn) {
-    const top = (document.getElementById("top-stack")?.getBoundingClientRect().bottom || 0) + 8;
-    const hit = document.elementFromPoint(window.innerWidth / 2, top);
-    const inPaper = hit && paper.contains(hit);
-    const u = inPaper ? unitAt(hit) : null;
-    const box = inPaper ? hit.closest(".ltx_para, figure, .ltx_abstract") || hit : null;
-    const pick = () => (u && shown(u.el) ? u.el : u && shown(u.ko) ? u.ko : shown(box) ? box : null);
-    const a = pick(), before = a ? a.getBoundingClientRect().top : 0;
+    const a = anchorAt((document.getElementById("top-stack")?.getBoundingClientRect().bottom || 0) + 8);
+    // 보던 쪽이 사라지면(번역 모드로 바꿔 영어를 숨김 등) 짝으로: 원문 자리에 번역문이 오고, 그 반대도
+    const pick = () => (!a ? null : !a.u ? (shown(a.el) ? a.el : null)
+      : (a.ko ? [a.u.ko, a.u.el] : [a.u.el, a.u.ko]).find(shown) || null);
+    const first = pick(), before = first ? first.getBoundingClientRect().top : 0;
     const root = document.documentElement;
-    root.style.overflowAnchor = "none";
+    if (first) root.style.overflowAnchor = "none"; // 기준을 못 찾았으면 브라우저의 scroll anchoring에 맡김
     try { fn(); } finally {
-      const b = a && pick();
+      const b = first && pick();
       if (b) {
         const d = b.getBoundingClientRect().top - before;
         if (Math.abs(d) > 1) window.scrollBy(0, d);
       }
-      requestAnimationFrame(() => { root.style.overflowAnchor = ""; });
+      if (first) requestAnimationFrame(() => { root.style.overflowAnchor = ""; });
     }
   }
 
@@ -261,6 +301,7 @@
   let lineH = 0;
   function showChip(u, kind, height = 0) {
     clearChip(u);
+    if (u.kind === "note") return; // 각주는 단락 번역문 안에 들어감 (실패는 상태 칩의 '다시'로)
     if (kind === "pending") {
       if (u.kind === "title") return; // 제목은 짧아 자리만 차지
       lineH = lineH || parseFloat(getComputedStyle(paper).lineHeight) || 26;
@@ -278,6 +319,7 @@
     if (!rec || !rec.s || u.ko || mode === "orig") return;
     if (!checkPlaceholders(rec.s.map(p => p[1]), rec.ph.length)) { u.state = "err"; showChip(u, "err"); return; }
     clearChip(u);
+    if (u.kind === "note") { u.state = "done"; refreshNotes(u); return; }
     const ko = buildKo(u, rec);
     A.insertUI(u.el, ko, "afterend"); // 제목이면 .ltx_title 바로 뒤 (section-study의 .ss-head보다 앞)
     u.ko = ko;
@@ -365,7 +407,7 @@
       const key = state ? `${label}|${state}` : null;
       if (chip === key && state !== "error") return;
       chip = key;
-      UI.status("section-translate", label, state, opts);
+      keepPlace(() => UI.status("section-translate", label, state, opts)); // 띠(#top-stack)는 흐름 안: 높이가 바뀌어도 본문 제자리
     };
     if (mode === "orig") { announce = loadingShown = false; if (chip) set("번역", null); return; }
     const busy = inflight || wanted.size, failed = (units || []).filter(u => u.state === "err");
@@ -387,14 +429,14 @@
       const center = window.innerHeight / 2;
       while (inflight < (App.streaming ? 1 : 2) && wanted.size) {
         const items = [...wanted].map(u => {
-          const r = u.el.getBoundingClientRect();
+          const r = placeOf(u).getBoundingClientRect();
           return { u, d: Math.abs((r.top + r.bottom) / 2 - center), len: u.len };
         }).sort((a, b) => a.d - b.d);
         // 지금 화면에 있는 단위가 맨 앞이면 작은 묶음으로 (첫 번역이 빨리 뜨게), 앞쪽 단위는 2500자까지
         const cap = items[0].d < center ? MAX_CHARS_NEAR : MAX_CHARS;
         const batch = items[0].u.solo ? [items[0]] : planBatch(items.filter(x => !x.u.solo), MAX_UNITS, cap);
         batch.forEach(x => wanted.delete(x.u));
-        send(batch.map(x => x.u));
+        send(batch.map(x => x.u), { force: batch.length === 1 && !!batch[0].u.force }); // '다시 번역'은 늘 혼자 (solo)
       }
     }
     setStatus();
@@ -402,7 +444,7 @@
 
   async function send(batch, { force = false } = {}) {
     inflight++;
-    const heights = batch.map(u => (mode === "both" && u.kind !== "title" ? u.el.getBoundingClientRect().height : 0));
+    const heights = batch.map(u => (mode === "both" && (u.kind === "p" || u.kind === "cap") ? u.el.getBoundingClientRect().height : 0));
     batch.forEach(u => { u.state = "sent"; });
     keepPlace(() => batch.forEach((u, i) => showChip(u, "pending", heights[i])));
     setStatus();
@@ -418,23 +460,26 @@
     } catch (e) { error = e; }
     inflight--;
     const done = [], rows = [];
-    if (error) {
-      const offline = !error.status && navigator.onLine === false;
-      const titlesOnly = batch.every(u => u.kind === "title");
-      for (const u of batch) {
-        clearChip(u);
-        if (mode === "orig" || (titlesOnly && batch.length > 1)) { u.state = ""; continue; } // 제목 미리 받기 실패: 조용히 (보일 때 다시)
-        if (offline || (error.status && batch.length > 1 && !force)) {
-          // 오프라인: 'online'까지 대기 / 묶음 실패(잘림·형식 오류): 하나씩 다시
-          if (!offline) u.solo = true;
-          u.state = "wanted";
-          wanted.add(u);
-        } else {
-          u.state = "err";
-          showChip(u, "err");
+    // 칩을 지우고 그리는 것까지 모두 keepPlace 안에서: 위쪽 단위의 대기 칩이 건너뛰기·실패로 사라져도 읽던 곳이 그대로
+    keepPlace(() => {
+      if (error) {
+        const offline = !error.status && navigator.onLine === false;
+        const titlesOnly = batch.every(u => u.kind === "title");
+        for (const u of batch) {
+          clearChip(u);
+          if (mode === "orig" || (titlesOnly && batch.length > 1)) { u.state = ""; continue; } // 제목 미리 받기 실패: 조용히 (보일 때 다시)
+          if (offline || (error.status && batch.length > 1 && !force)) {
+            // 오프라인: 'online'까지 대기 / 묶음 실패(잘림·형식 오류): 하나씩 다시
+            if (!offline) u.solo = true;
+            u.state = "wanted";
+            wanted.add(u);
+          } else {
+            u.state = "err";
+            showChip(u, "err");
+          }
         }
+        return;
       }
-    } else {
       for (const u of batch) {
         const d = data && data[u.id];
         if (!d || (d.s && d.fp !== u.fp)) { u.state = "gone"; clearChip(u); continue; } // 서버가 모르는 단위·다른 글 (파서 차이)
@@ -449,48 +494,64 @@
         rows.push([u, rec]);
         done.push(u);
       }
-      saveRows(rows).catch(() => {});
-    }
-    if (done.length) {
-      keepPlace(() => {
-        for (const u of done) {
-          clearChip(u);
-          if (force || u.ko) dropUnit(u); // 다시 번역: 새 번역으로 바꿈
-          if (mode === "orig") u.state = "";
-          else showUnit(u);
-        }
-      });
-    }
+      for (const u of done) {
+        clearChip(u);
+        if (force) u.force = false; // '다시 번역' 끝: 오프라인·실패 뒤 다시 보낼 때까지 force 유지
+        if (force || u.ko) dropUnit(u); // 다시 번역: 새 번역으로 바꿈
+        if (mode === "orig") u.state = "";
+        else showUnit(u);
+      }
+    });
+    saveRows(rows).catch(() => {});
     if (done.some(u => u.kind === "title")) emitTranslations();
     pump();
   }
+  // '다시 번역': 캐시를 건너뛰고 새로. 오프라인·실패로 다시 보낼 때도 force가 남게 단위에 표시 (늘 혼자 보냄)
+  function redo(u) {
+    if (u.state === "sent") return;
+    u.force = u.solo = true;
+    wanted.delete(u);
+    send([u], { force: true });
+  }
   function retry(list) {
-    for (const u of list) {
-      if (u.state !== "err") continue;
-      clearChip(u);
-      u.solo = true;
-      u.state = "wanted";
-      wanted.add(u);
-    }
+    keepPlace(() => {
+      for (const u of list) {
+        if (u.state !== "err") continue;
+        clearChip(u);
+        u.solo = true;
+        u.state = "wanted";
+        wanted.add(u);
+      }
+    });
     pump();
   }
 
+  const withNotes = (u, out = []) => { out.push(u); for (const n of u.notes || []) withNotes(n, out); return out; };
+  // 거리 계산용 위치: 각주는 든 단위, 번역 모드에서 숨긴 원문은 번역문
+  function placeOf(u) {
+    while (u.host) u = u.host;
+    return shown(u.el) || !u.ko ? u.el : u.ko;
+  }
   // 보이기 직전(위아래 1.5화면)에 들어온 단위: 저장된 번역은 바로 그리고, 없으면 요청 대기열로
   function onIntersect(entries) {
     const now = [];
+    const take = u => {
+      if (u.ko || u.state) return;
+      const rec = recs.get(u.id);
+      if (rec) { if (rec.skip) u.state = "skip"; else now.push(u); return; }
+      if (shouldSkip(u.src, u.kind)) { u.state = "skip"; return; }
+      wanted.add(u);
+      u.state = "wanted";
+    };
     for (const e of entries) {
       const u = unitOfEl.get(e.target);
       if (!u) continue;
       if (!e.isIntersecting) {
-        if (wanted.delete(u)) u.state = ""; // 지나쳐 간 단위는 보내지 않음
+        for (const x of withNotes(u)) if (wanted.delete(x)) x.state = ""; // 지나쳐 간 단위는 보내지 않음
         continue;
       }
-      if (u.ko || u.state) continue;
-      const rec = recs.get(u.id);
-      if (rec) { if (rec.skip) u.state = "skip"; else now.push(u); continue; }
-      if (shouldSkip(u.src, u.kind)) { u.state = "skip"; continue; }
-      wanted.add(u);
-      u.state = "wanted";
+      take(u);
+      if (u.state !== "skip") withNotes(u).slice(1).forEach(take); // 각주는 든 단위 다음에 (번역문 안 복제에 들어감)
     }
     if (now.length) keepPlace(() => now.forEach(showUnit));
     schedule();
@@ -511,7 +572,7 @@
     await loadCache();
     if (mode === "orig" || io || typeof IntersectionObserver === "undefined") return;
     io = new IntersectionObserver(onIntersect, { rootMargin: "150% 0px" });
-    units.forEach(u => io.observe(u.el));
+    units.forEach(u => { if (u.kind !== "note") io.observe(u.el); });
     App.idle(prefetchTitles).catch(() => {});
   }
   function deactivate() {
@@ -523,7 +584,7 @@
     for (const u of units || []) {
       dropUnit(u);
       clearChip(u);
-      u.revealed = false;
+      u.revealed = u.force = false;
       if (u.state === "done" || u.state === "err") u.state = "";
     }
   }
@@ -562,7 +623,7 @@
     const en = fill(h("span", { class: "tr-en", lang: "en" }), pair[0], rec.ph, resolveAtoms(u, rec.ph));
     en.append(h("span", { class: "tr-en-tools" },
       UI.feedback("translate", u.id, { label: "번역" }),
-      h("button", { type: "button", text: "다시 번역", onclick: () => { if (u.state !== "sent") send([u], { force: true }); } })));
+      h("button", { type: "button", text: "다시 번역", onclick: () => redo(u) })));
     span.after(en);
     if (active && active.span !== span) active.span.classList.remove("tr-on");
     // 쌍 칠하기 (§5.10 tr-align): 영어 쪽은 색인 오프셋으로 찾은 그 문장(둘다 모드에서 위 문단), 한국어 쪽은 raw Range.
@@ -580,43 +641,53 @@
   }
 
   // ---------- 다른 기능용 API (§6.1) ----------
-  function sentencesIn(u, rec, sel) {
-    if (sel.start == null || sel.end == null) return null;
-    const idx = [];
-    rec.s.forEach((pair, i) => {
-      const o = A.locate(phText(pair[0], rec.ph), { root: u.el });
-      if (o && o.start < sel.end && o.end > sel.start) idx.push(i);
-    });
-    return idx;
-  }
-  // 선택을 덮는 저장된 번역 쌍 [{en, ko}] (요청하지 않음). 하나라도 번역 전이면 null
+  // 선택을 덮는 저장된 번역 쌍 [{en, ko}] (요청하지 않음). 선택한 글 중 한 글자라도(공백 빼고) 번역 쌍 밖이면 null:
+  // 번역 전 단위, 단위가 아닌 곳(수식 블록·표·코드), 원문에서 찾지 못한 문장. 그러면 smart-presets가 번역을 물어봄
   async function lookup(sel) {
     if (!sel) return null;
     collectUnits();
     await loadCache();
-    const range = sel.range || null, picks = [];
-    const startEl = range ? (range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement) : null;
-    const ko = startEl && startEl.closest(".tr-ko");
+    const range = sel.range || null, out = [];
+    const add = (rec, i) => { if (rec.s[i]) out.push({ en: phText(rec.s[i][0], rec.ph), ko: phText(rec.s[i][1], rec.ph) }); };
+    const elOf = n => (n && n.nodeType !== 1 ? n.parentElement : n);
+    const ko = range ? elOf(range.startContainer)?.closest(".tr-ko") : null;
     if (sel.inTranslation || ko) {
-      const u = ko && koOf.get(ko);
-      if (!u) return null;
-      const idx = [...ko.querySelectorAll(".tr-s")].filter(s => range.intersectsNode(s)).map(s => Number(s.dataset.i));
-      picks.push({ u, idx });
-    } else {
-      let hit = range ? units.filter(u => { try { return range.intersectsNode(u.el); } catch { return false; } }) : [];
-      if (!hit.length && sel.paragraphEl) hit = units.filter(u => sel.paragraphEl.contains(u.el) || u.el.contains(sel.paragraphEl));
-      hit = hit.filter(u => !hit.some(o => o !== u && o.el.contains(u.el))); // 문단 안 각주 본문은 빼고
-      if (!hit.length) return null;
-      for (const u of hit) picks.push({ u, idx: null });
+      // 번역문 안 선택: 한 .tr-ko 안에서 고른 한국어 문장들
+      const u = ko && koOf.get(ko), rec = u && recs.get(u.id);
+      if (!rec || !rec.s || !ko.contains(range.endContainer)) return null;
+      for (const s of ko.querySelectorAll(".tr-s")) if (range.intersectsNode(s)) add(rec, Number(s.dataset.i));
+      return out.length ? out : null;
     }
-    const out = [];
-    for (const p of picks) {
-      const rec = recs.get(p.u.id);
-      if (!rec || !rec.s) return null;
-      const idx = p.idx && p.idx.length ? p.idx : sentencesIn(p.u, rec, sel);
-      const list = idx && idx.length ? idx : rec.s.map((_, i) => i);
-      for (const i of list) if (rec.s[i]) out.push({ en: phText(rec.s[i][0], rec.ph), ko: phText(rec.s[i][1], rec.ph) });
+    const meets = u => { try { return range.intersectsNode(u.el); } catch { return false; } };
+    let hit = units.filter(u => u.kind !== "note" && (range ? meets(u)
+      : !!sel.paragraphEl && (sel.paragraphEl.contains(u.el) || u.el.contains(sel.paragraphEl)))); // 문단 기준은 범위가 없을 때만
+    hit = hit.filter(u => !hit.some(o => o !== u && o.el.contains(u.el)));
+    if (!hit.length || hit.some(u => !(recs.get(u.id) || {}).s)) return null;
+    if (sel.start == null || sel.end == null) {
+      if (range) return null; // 색인 밖 선택(원문 각주 본문 등): 덮는지 알 수 없음
+      for (const u of hit) { const rec = recs.get(u.id); rec.s.forEach((_, i) => add(rec, i)); }
+      return out.length ? out : null;
     }
+    // 원문에서 찾은 문장들이 선택 범위를 빈틈없이 덮는지 (색인 오프셋으로)
+    const spans = [];
+    for (const u of hit) {
+      const rec = recs.get(u.id);
+      rec.s.forEach((pair, i) => {
+        const o = A.locate(phText(pair[0], rec.ph), { root: u.el });
+        if (o) spans.push({ start: o.start, end: o.end, rec, i });
+      });
+    }
+    spans.sort((a, b) => a.start - b.start);
+    const text = A.index().text;
+    let pos = sel.start;
+    for (const sp of spans) {
+      if (sp.start >= sel.end) break;
+      if (sp.end <= pos) continue;
+      if (sp.start > pos && text.slice(pos, sp.start).trim()) return null;
+      add(sp.rec, sp.i);
+      pos = sp.end;
+    }
+    if (pos < sel.end && text.slice(pos, sel.end).trim()) return null;
     return out.length ? out : null;
   }
   // 섹션 제목 번역 (목차·현재 섹션 표시용). 아직 없으면 null

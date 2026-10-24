@@ -158,6 +158,18 @@ class EndpointTests(CoreTestCase):
         self.assertEqual(len(out["S2.p1#0"]["s"]), 2)
         self.assertNotIn('"S1.p2#0"', self.claude.user_texts()[0])
 
+    def test_non_string_ids_are_dropped_without_losing_good_rows(self):
+        # 목록·객체 id(해시 불가)는 그 줄만 버리고, 같은 응답의 올바른 줄은 저장 (500이 아님)
+        self.claude.push(json.dumps({"u": [{"id": ["S1.p2#0"], "ko": ["x"]}, {"id": {"a": 1}, "ko": ["y"]}, {"id": 7, "ko": ["z"]},
+                                           {"id": "S1.p2#0", "ko": ["기여는 다음과 같습니다:"]}]}, ensure_ascii=False))
+        r = self.post(["S1.p2#0", "abs.0"])
+        self.assertEqual(r.status_code, 200)
+        out = r.json()
+        self.assertEqual(out["S1.p2#0"]["s"], [["Our contributions are as follows:", "기여는 다음과 같습니다:"]])
+        self.assertIn("err", out["abs.0"])
+        cache = core.read_json(core.task_path(self.paper_id, "section-translate"), {})
+        self.assertEqual([k.split(":")[0] for k in cache], ["S1.p2#0"])
+
     def test_sentence_count_mismatch_collapses_to_one_pair(self):
         self.claude.push(ko_json(("abs.0", ["두 문장을 한 문장으로 합친 번역입니다."])))
         s = self.post(["abs.0"]).json()["abs.0"]["s"]
