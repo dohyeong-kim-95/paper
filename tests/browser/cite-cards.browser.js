@@ -27,7 +27,7 @@ const CARD1 = {
 async function newPage(browser) {
   const ctx = await browser.newContext({ viewport: { width: 412, height: 800 }, serviceWorkers: "block" });
   await ctx.route(u => !u.href.startsWith(BASE), r => r.fulfill({ status: 200, body: "", contentType: "text/plain" }));
-  const asks = [], cites = [];
+  const asks = [], cites = [], repos = [];
   await ctx.route(`${BASE}/api/ask`, r => {
     asks.push(JSON.parse(r.request().postData() || "{}"));
     return r.fulfill({ status: 200, body: "인용 이유입니다.", contentType: "text/plain; charset=utf-8" });
@@ -39,16 +39,23 @@ async function newPage(browser) {
     const body = id === "bib.bib1" ? CARD1 : { bib_id: id, label: "", bib_text: "", enriched: null, partial: false };
     return r.fulfill({ status: 200, body: JSON.stringify(body), contentType: "application/json" });
   });
-  await ctx.route(`${BASE}/api/cite-cards/github**`, r => r.fulfill({
+  await ctx.route(`${BASE}/api/cite-cards/github**`, r => {
+    const repo = new URL(r.request().url()).searchParams.get("repo");
+    repos.push(repo);
+    if (repo === "nobody/none") return r.fulfill({ status: 404, contentType: "application/json", body: '{"detail":"없음"}' });
+    if (repo === "example/limited") return r.fulfill({ status: 503, contentType: "application/json", body: '{"detail":"제한"}' });
+    return r.fulfill({
     status: 200, contentType: "application/json",
     body: JSON.stringify({ full_name: "example/sparse-moe", description: "Sparse MoE 구현", stars: 1234, language: "Python",
       pushed_at: new Date().toISOString(), topics: ["moe"], archived: false, license: "MIT", homepage: null }),
-  }));
+    });
+  });
   const page = await ctx.newPage();
   const errors = [];
   page.on("pageerror", e => errors.push(String(e)));
   page.asks = asks;
   page.cites = cites;
+  page.repos = repos;
   page.errors = errors;
   await page.goto(PAPER);
   await page.waitForFunction(() => window.PaperApp && document.readyState === "complete" && PaperApp.has("cite-cards"));
@@ -158,6 +165,65 @@ test("GitHub 링크 탭: 떠나지 않고 저장소 미리보기 peek", async br
   assert.match(r.text, /Sparse MoE 구현/);
   assert.match(r.text, /★ 1,234 · Python · MIT · 오늘 업데이트/);
   assert.deepEqual(r.actions, ["열기", "링크 복사"]);
+  assert.deepEqual(page.errors, []);
+  await page.context().close();
+});
+
+test("'여기서 왜 인용?'을 누르고 보강을 기다리는 사이 카드를 닫으면 묻지 않음", async browser => {
+  const page = await newPage(browser);
+  await page.evaluate(() => document.querySelector('#paper a[href="#bib.bib1"]').click());
+  await page.click(".cc-peek .cc-row > button.primary"); // 보강 대기 중 (응답 600ms)
+  await page.keyboard.press("Escape");
+  await until(page, () => !document.querySelector(".cc-peek"));
+  await sleep(1900); // askWhy의 최대 대기 1.5초가 지나도
+  assert.equal(await page.evaluate(() => document.getElementById("sheet").hidden), true, "시트가 저절로 열리지 않음");
+  assert.equal(page.asks.length, 0, "/api/ask를 보내지 않음");
+  assert.deepEqual(page.errors, []);
+  await page.context().close();
+});
+
+test("GitHub: 없는 저장소(404)는 이번 세션 동안 다시 묻지 않고, 일시 실패(503)는 다음 탭에서 다시", async browser => {
+  const page = await newPage(browser);
+  const tapRepo = async repo => {
+    await page.evaluate(r => {
+      let a = document.querySelector(`#paper a[href="https://github.com/${r}"]`);
+      if (!a) {
+        a = Object.assign(document.createElement("a"), { href: `https://github.com/${r}`, textContent: r });
+        document.getElementById("S1.p1").append(" ", a);
+      }
+      a.click();
+    }, repo);
+    await until(page, () => document.querySelector(".cc-repo .cc-status:not(:empty)") && !document.querySelector(".cc-repo .cc-skel"));
+    const text = await page.textContent(".cc-repo");
+    await page.keyboard.press("Escape");
+    await until(page, () => !document.querySelector(".cc-peek"));
+    return text;
+  };
+  assert.match(await tapRepo("nobody/none"), /찾을 수 없습니다/);
+  assert.match(await tapRepo("nobody/none"), /찾을 수 없습니다/);
+  assert.deepEqual(page.repos, ["nobody/none"]);
+  assert.match(await tapRepo("example/limited"), /불러올 수 없습니다/);
+  await tapRepo("example/limited");
+  assert.deepEqual(page.repos, ["nobody/none", "example/limited", "example/limited"]);
+  assert.deepEqual(page.errors, []);
+  await page.context().close();
+});
+
+test("인용이 든 선택의 미리 보강은 공유 idle 큐를 응답까지 붙잡지 않음", async browser => {
+  const page = await newPage(browser);
+  await page.evaluate(() => {
+    const p = document.getElementById("S1.p1");
+    const cite = p.querySelector("cite");
+    const r = document.createRange();
+    r.setStart(p.firstChild, 0);
+    r.setEndAfter(cite);
+    PaperApp.selectRange(r);
+  });
+  await until(page, () => !document.getElementById("sel-bar").hidden);
+  for (let i = 0; i < 50 && page.cites.length < 2; i++) await sleep(20);
+  assert.deepEqual([...page.cites].sort(), ["bib.bib1", "bib.bib2"], "인용 둘을 함께 미리 요청");
+  const ms = await page.evaluate(async () => { const t0 = performance.now(); await PaperApp.idle(() => null); return performance.now() - t0; });
+  assert.ok(ms < 400, `다음 idle 작업까지 ${Math.round(ms)}ms (응답 600ms를 기다리지 않음)`);
   assert.deepEqual(page.errors, []);
   await page.context().close();
 });

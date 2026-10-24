@@ -1,9 +1,11 @@
 """cite-cards: 인용 카드 (참고문헌 즉시 표시 + arXiv·Semantic Scholar·Crossref 보강) + GitHub 링크 미리보기.
 
 Claude 호출 없음: '여기서 왜 인용?'은 클라이언트가 /api/ask로 보냄 (논문 캐시 공유).
-캐시: cache/<id>.cite-cards.json = {"_batch": ts, "<bib_id>": {"arxiv": meta|None, "s2": meta|None, "crossref": meta|None}}
-  - 키가 있으면 조회 완료 (None = 찾아봤지만 없음, 캐시함). 네트워크 실패한 출처는 키를 남기지 않음 (다음에 다시)
-  - arXiv id가 있는 항목은 첫 탭에서 참고문헌 전체의 arXiv id를 한 번(id_list)에 조회해 모두 저장
+캐시: cache/<id>.cite-cards.json = {"_batch": ts, "<bib_id>": {"arxiv": meta|None, "s2": ..., "crossref": ...,
+                                                               "_miss": {"<출처>": 확인 시각}}}
+  - 찾은 메타는 계속 유효. None(찾아봤지만 없음)은 MISS_TTL 동안만 유효하고 지나면 다시 조회
+  - 네트워크 실패·빈 응답인 출처는 키를 남기지 않음 (다음 탭에서 다시)
+  - arXiv id가 있는 항목은 첫 탭에서 참고문헌의 (아직 모르는) arXiv id를 한 번(id_list)에 조회해 모두 저장
 """
 import asyncio
 import difflib
@@ -25,7 +27,8 @@ ARXIV_WAIT = 12.0  # arXiv는 전역 3초 간격 대기열이 있어 전체 대�
 MATCH = 0.9  # 제목 검색 결과 채택 기준 (difflib 비율)
 BATCH_MAX = 150
 DOWN_TTL = 120  # S2·Crossref·GitHub가 실패(429·5xx·네트워크)하면 잠시 부르지 않음 (요청 제한 악화 방지)
-GH_TTL = 86400  # GitHub 저장소 정보 디스크 캐시 수명
+GH_TTL = 86400  # GitHub 저장소 정보 디스크 캐시 수명 ('없음'(404)도 이 동안 캐시: 비인증 API는 IP당 시간 60회)
+MISS_TTL = 7 * 86400  # '없음' 캐시 수명: arXiv의 일시적인 빈 응답 등이 영구히 남지 않게 지나면 다시 조회
 S2_API = "https://api.semanticscholar.org/graph/v1/paper/"
 S2_FIELDS = "title,venue,year,citationCount,tldr,externalIds,authors,abstract"
 CROSSREF_API = "https://api.crossref.org/works/"
@@ -53,6 +56,45 @@ def title_query(bib: dict) -> str:
     """제목 검색어 (문장부호 제거). 3단어 미만이면 '' → 검색하지 않음"""
     q = norm_title(bib.get("title_guess") or "")
     return q if len(q.split()) >= 3 else ""
+
+
+def valid_arxiv_id(aid: str | None) -> bool:
+    """새 형식 YYMM.NNNN(N): 월 01-12, 0704부터, 1501부터는 5자리. 형식이 틀린 id 하나가 id_list 일괄 조회 전체를
+    오류로 만들지 않게 미리 거름"""
+    m = re.fullmatch(r"(\d{2})(\d{2})\.(\d{4,5})", aid or "")
+    if not m or not 1 <= int(m.group(2)) <= 12:
+        return False
+    yymm = int(m.group(1) + m.group(2))
+    return yymm >= 704 and (len(m.group(3)) == 5) == (yymm >= 1501)
+
+
+def known(entry: dict, src: str, now: float | None = None) -> bool:
+    """이 출처의 결과가 캐시에 있고 유효한가: 찾은 메타는 계속, None(없음)은 MISS_TTL 동안만 (옛 캐시의 시각 없는 None은 만료)"""
+    if src not in entry:
+        return False
+    if entry[src] is not None:
+        return True
+    t = as_map(entry.get("_miss")).get(src)
+    return isinstance(t, (int, float)) and (now or time.time()) - t < MISS_TTL
+
+
+def put(entry: dict, results: dict, now: float) -> dict:
+    """출처별 결과를 항목에 병합한 새 dict. None은 확인 시각(_miss)을 남김. 이미 찾은 메타를 None으로 덮지 않음"""
+    out = dict(as_map(entry))
+    miss = dict(as_map(out.get("_miss")))
+    for src, val in results.items():
+        if val is None:
+            if out.get(src) is not None:
+                continue
+            miss[src] = int(now)
+        else:
+            miss.pop(src, None)
+        out[src] = val
+    if miss:
+        out["_miss"] = miss
+    else:
+        out.pop("_miss", None)
+    return out
 
 
 def sources(bib: dict) -> list[str]:
@@ -116,7 +158,8 @@ def merge(entry: dict) -> dict | None:
 
 
 def card(bib: dict, entry: dict) -> dict:
-    missing = [s for s in sources(bib) if s not in (entry or {})]
+    now = time.time()
+    missing = [s for s in sources(bib) if not known(as_map(entry), s, now)]
     return {
         "bib_id": bib["id"], "label": bib["label"], "bib_text": bib["text"], "arxiv_id": bib["arxiv_id"],
         "doi": bib["doi"], "title_guess": bib["title_guess"], "enriched": merge(entry), "partial": bool(missing),
@@ -145,27 +188,45 @@ async def get_json(url: str, params: dict | None = None, headers: dict | None = 
 
 
 async def arxiv_call(**kw) -> list[dict]:
+    async def go():
+        # 전역 arXiv 대기열(3초 간격)이 이미 깊으면 줄 서지 않음: 대기 중에 취소되면 예약한 자리만 남아
+        # 요청 없이 다른 기능(related-papers·daily-feed …)의 호출을 3초씩 밀어냄. 확인과 자리 예약 사이에 await 없음
+        depth = getattr(core, "_arxiv_next", 0.0) - time.monotonic()
+        if depth > ARXIV_WAIT - TIMEOUT:
+            raise SourceDown(f"arXiv queue {depth:.1f}s deep")
+        return await core.arxiv_query(timeout=TIMEOUT, **kw)
     try:
-        return await asyncio.wait_for(core.arxiv_query(timeout=TIMEOUT, **kw), ARXIV_WAIT)
+        # 대기 ≤ ARXIV_WAIT - TIMEOUT이므로 이 상한은 실제 요청 중에만 걸림
+        return await asyncio.wait_for(go(), ARXIV_WAIT)
     except (httpx.HTTPError, ValueError, asyncio.TimeoutError) as e:
         raise SourceDown(f"{type(e).__name__}: {e}") from e
 
 
 async def arxiv_batch(arxiv_id: str, idx: dict, want: str) -> dict | None:
-    """참고문헌의 arXiv id 전부를 한 번에 조회해 캐시 (동시 탭은 하나를 공유). 반환: want의 메타"""
-    async def run():
-        ids = list(dict.fromkeys(b["arxiv_id"] for b in idx["bib"].values() if b["arxiv_id"]))
-        ids = ([want] + [i for i in ids if i != want])[:BATCH_MAX]
-        found = {e["id"]: slim_arxiv(e) for e in await arxiv_call(id_list=ids, max_results=len(ids))}
+    """참고문헌에서 아직 모르는 arXiv id 전부를 한 번에 조회해 캐시 (동시 탭은 하나를 공유). 반환: want의 메타"""
+    if not valid_arxiv_id(want):
+        return None  # arXiv는 형식 오류만 돌려줌 → 없음
+    path = core.task_path(arxiv_id, NAME)
 
-        def upd(cur):
-            cur = as_map(cur)
+    async def run():
+        cur, now = as_map(core.read_json(path, {})), time.time()
+        todo = [b["arxiv_id"] for bid, b in idx["bib"].items()
+                if valid_arxiv_id(b["arxiv_id"]) and not known(as_map(cur.get(bid)), "arxiv", now)]
+        ids = list(dict.fromkeys([want, *todo]))[:BATCH_MAX]
+        entries = await arxiv_call(id_list=ids, max_results=len(ids))
+        if not entries:  # arXiv가 가끔 주는 빈 페이지·오류 항목뿐인 피드 → '없음'으로 저장하지 않고 다음 탭에서 다시
+            raise SourceDown("empty arXiv response")
+        found = {e["id"]: slim_arxiv(e) for e in entries}
+        now = time.time()
+
+        def upd(c):
+            c = as_map(c)
             for bid, b in idx["bib"].items():
-                if b["arxiv_id"] in ids:
-                    cur[bid] = {**as_map(cur.get(bid)), "arxiv": found.get(b["arxiv_id"])}
-            cur["_batch"] = int(time.time())
-            return cur
-        core.update_json(core.task_path(arxiv_id, NAME), upd, {})
+                if b["arxiv_id"] in ids:  # 항목이 있는 응답에서 빠진 id만 '없음' (MISS_TTL 뒤 다시)
+                    c[bid] = put(as_map(c.get(bid)), {"arxiv": found.get(b["arxiv_id"])}, now)
+            c["_batch"] = int(now)
+            return c
+        core.update_json(path, upd, {})
         return ids, found
 
     ids, found = await core.singleflight((NAME, "batch", arxiv_id), run)
@@ -211,9 +272,10 @@ async def enrich(arxiv_id: str, idx: dict, bib_id: str) -> dict:
     bib = idx["bib"][bib_id]
     path = core.task_path(arxiv_id, NAME)
     entry = dict(as_map(as_map(core.read_json(path, {})).get(bib_id)))
+    now = time.time()
     jobs = {}
     for src in sources(bib):
-        if src in entry or (src != "arxiv" and is_down(src)):
+        if known(entry, src, now) or (src != "arxiv" and is_down(src)):
             continue
         if src == "arxiv":
             jobs[src] = arxiv_batch(arxiv_id, idx, bib["arxiv_id"]) if bib["arxiv_id"] else arxiv_title(bib)
@@ -230,8 +292,9 @@ async def enrich(arxiv_id: str, idx: dict, bib_id: str) -> dict:
             continue
         new[src] = res
     if new:
-        core.update_json(path, lambda c: {**as_map(c), bib_id: {**as_map(as_map(c).get(bib_id)), **new}}, {})
-    entry.update(new)
+        now = time.time()
+        core.update_json(path, lambda c: {**as_map(c), bib_id: put(as_map(as_map(c).get(bib_id)), new, now)}, {})
+        entry = put(entry, new, now)
     return entry
 
 
@@ -247,14 +310,16 @@ async def github_repo(repo: str):
         raise HTTPException(400, "저장소 이름 형식이 아닙니다 (owner/repo).")
     owner, name = m.groups()
     path = core.task_path("github", f"{NAME}.{owner}.{name}".lower())  # owner에는 '.'이 없으므로 겹치지 않음
-    hit = core.read_json(path)
-    hit = hit if isinstance(hit, dict) and isinstance(hit.get("data"), dict) else None
-    if hit and time.time() - hit.get("ts", 0) < GH_TTL:
-        return core.offline_json(hit["data"])
+    hit = core.read_json(path)  # {"ts", "data": 저장소 정보 | None(없음)}
+    ok = isinstance(hit, dict) and "data" in hit and (hit["data"] is None or isinstance(hit["data"], dict))
+    hit = hit if ok else None
+    if hit and isinstance(hit.get("ts"), (int, float)) and time.time() - hit["ts"] < GH_TTL:
+        return repo_response(hit["data"])
 
     async def fetch():
         d = await get_json(GITHUB_API + f"{owner}/{name}", headers={"Accept": "application/vnd.github+json"})
-        if not isinstance(d, dict):
+        if not isinstance(d, dict):  # 없음(비공개·삭제·저장소 아닌 경로)도 캐시 → 같은 링크를 탭할 때마다 GitHub를 부르지 않음
+            core.write_json(path, {"ts": int(time.time()), "data": None})
             return None
         home = d.get("homepage") or ""
         data = {
@@ -275,8 +340,12 @@ async def github_repo(repo: str):
             _down["github"] = time.time()
     if data is core.MISSING:
         if hit:  # 오래된 캐시라도 있으면 그것을
-            return core.offline_json(hit["data"])
+            return repo_response(hit["data"])
         raise HTTPException(503, "GitHub 정보를 지금 불러올 수 없습니다 (요청 제한 또는 오프라인).")
+    return repo_response(data)
+
+
+def repo_response(data: dict | None):
     if data is None:
         raise HTTPException(404, "저장소를 찾을 수 없습니다.")
     return core.offline_json(data)
@@ -289,7 +358,7 @@ async def cite_card(arxiv_id: str, bib_id: str):
     if not bib:
         raise HTTPException(404, "참고문헌 항목을 찾을 수 없습니다.")
     entry = as_map(as_map(core.read_json(core.task_path(arxiv_id, NAME), {})).get(bib_id))
-    if any(s not in entry for s in sources(bib)):
+    if not all(known(entry, s) for s in sources(bib)):
         entry = await core.singleflight((NAME, arxiv_id, bib_id), lambda: enrich(arxiv_id, idx, bib_id))
     data = card(bib, entry)
     # 일부 출처가 실패한 응답은 오프라인 저장 대상이 아님 (나중의 완전한 응답을 덮지 않게)
