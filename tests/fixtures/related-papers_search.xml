@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title type="html">ArXiv Query: search_query=(ti:sparse OR abs:sparse) AND ...</title>
+  <id>http://arxiv.org/api/related-papers-fixture</id>
+  <updated>2026-10-23T00:00:00-04:00</updated>
+  <entry>
+    <id>http://arxiv.org/abs/2401.00001v1</id>
+    <updated>2024-01-02T12:00:00Z</updated>
+    <published>2024-01-02T12:00:00Z</published>
+    <title>Sparse Mixtures for Everyone: A Test Paper</title>
+    <summary>We propose a sparse mixture of experts model that routes each token to two experts.</summary>
+    <author><name>Alice Kim</name></author>
+    <link href="http://arxiv.org/abs/2401.00001v1" rel="alternate" type="text/html"/>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2305.11111v3</id>
+    <updated>2023-06-01T12:00:00Z</updated>
+    <published>2023-05-18T12:00:00Z</published>
+    <title>Scaling Sparse Mixtures of Experts
+  to a Trillion Parameters</title>
+    <summary>  We scale sparse mixture of experts language models to one trillion parameters with a simple top-2 router
+and show that quality keeps improving while the compute per token stays flat. We also study load balancing
+losses, expert capacity factors and the effect of the number of experts on downstream fine-tuning quality.
+</summary>
+    <author><name>G. One</name></author>
+    <author><name>H. Two</name></author>
+    <author><name>I. Three</name></author>
+    <author><name>J. Four</name></author>
+    <author><name>K. Five</name></author>
+    <link href="http://arxiv.org/abs/2305.11111v3" rel="alternate" type="text/html"/>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2306.22222v1</id>
+    <updated>2023-06-20T12:00:00Z</updated>
+    <published>2023-06-20T12:00:00Z</published>
+    <title>Routing Tokens Efficiently in Sparse Mixtures</title>
+    <summary>An efficient token routing method for sparse mixture layers.</summary>
+    <author><name>L. Six</name></author>
+    <link href="http://arxiv.org/abs/2306.22222v1" rel="alternate" type="text/html"/>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2307.33333v2</id>
+    <updated>2023-07-10T12:00:00Z</updated>
+    <published>2023-07-01T12:00:00Z</published>
+    <title>Expert Choice Mixtures for Everyone</title>
+    <summary>Experts choose tokens instead of tokens choosing experts.</summary>
+    <author><name>M. Seven</name></author>
+    <author><name>N. Eight</name></author>
+    <link href="http://arxiv.org/abs/2307.33333v2" rel="alternate" type="text/html"/>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+</feed>

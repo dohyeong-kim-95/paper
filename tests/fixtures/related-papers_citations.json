@@ -1,0 +1,15 @@
+{
+  "offset": 0,
+  "data": [
+    {"citingPaper": {"paperId": "aaa111", "title": "A Survey of  Mixture of Experts", "year": 2025, "citationCount": 120,
+      "externalIds": {"ArXiv": "2501.01234", "DOI": "10.48550/arXiv.2501.01234", "CorpusId": 1}}},
+    {"citingPaper": {"paperId": "bbb222", "title": "Sparse Routers in Production", "year": 2024, "citationCount": 7,
+      "externalIds": {"DOI": "10.1000/prod.2024", "CorpusId": 2}}},
+    {"citingPaper": {"paperId": "ccc333", "title": "Expert Pruning at Scale", "year": 2025, "citationCount": 45,
+      "externalIds": {"ArXiv": "2503.04567", "CorpusId": 3}}},
+    {"citingPaper": {"paperId": "ddd444", "title": "", "year": 2025, "citationCount": 999, "externalIds": {}}},
+    {"citingPaper": {"paperId": "eee555", "title": "Old Style Id Paper", "year": 2024, "citationCount": 45,
+      "externalIds": {"ArXiv": "hep-th/9901001"}}},
+    {"citingPaper": {"paperId": null, "title": null}}
+  ]
+}
