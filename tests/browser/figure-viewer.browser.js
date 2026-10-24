@@ -391,7 +391,10 @@ test("고정 창은 헤더가 다시 나타나거나 위쪽 띠가 커지면 그
     return q.width && document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2)?.closest(".fv-pin");
   }).length, sel);
   const pinTop = () => page.evaluate(() => document.querySelector(".fv-pin").getBoundingClientRect().top);
-  assert.ok(await pinTop() < 40, "헤더가 숨어 있으면 맨 위 근처");
+  // 헤더가 숨으면 띠(#top-stack)만 맨 위에 남음. 띠에는 다른 기능의 줄(상태 칩 등)도 있을 수 있어 띠 아래 끝을 기준으로
+  const hidTop = await page.evaluate(() => ({ pin: document.querySelector(".fv-pin").getBoundingClientRect().top,
+    edge: document.getElementById("top-stack").getBoundingClientRect().bottom, bar: document.getElementById("bar").offsetHeight }));
+  assert.ok(hidTop.pin >= hidTop.edge && hidTop.pin - hidTop.edge < 37, `헤더가 숨어 있으면 띠 바로 아래 ${JSON.stringify(hidTop)}`);
   // 헤더가 나타남: 'paper:bar'는 전환(0.2초) 전에 오므로, 바로 그때도 도착 위치 아래로
   await page.evaluate(() => PaperUI.setBarHidden(false));
   const barH = await page.evaluate(() => document.getElementById("bar").offsetHeight);

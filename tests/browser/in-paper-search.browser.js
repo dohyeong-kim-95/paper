@@ -164,11 +164,11 @@ test("한글 질문 + Enter → AI로 찾기: 찾은 인용만 목록에, 탭하
   assert.match(await current(page), /balancing coefficient/);
   await page.click('.ps-link:text("목록")');
   assert.equal(await page.isVisible(".ps-results"), true);
-  // 목록은 본문 흐름 밖 덮개: 열고 닫아도 찾기 줄 높이(본문 위치)가 그대로
-  const h1 = await page.evaluate(() => document.getElementById("top-stack").offsetHeight);
+  // 목록은 본문 흐름 밖 덮개: 열고 닫아도 찾기 줄 높이(본문 위치)가 그대로 (띠의 다른 줄인 상태 칩은 저절로 사라질 수 있어 찾기 줄만)
+  const h1 = await page.evaluate(() => document.querySelector('#top-stack > [data-slot="in-paper-search"]').offsetHeight);
   await page.mouse.click(200, 700); // 목록 밖(본문)을 누르면 접힘
   assert.equal(await page.isVisible(".ps-results"), false);
-  assert.equal(await page.evaluate(() => document.getElementById("top-stack").offsetHeight), h1);
+  assert.equal(await page.evaluate(() => document.querySelector('#top-stack > [data-slot="in-paper-search"]').offsetHeight), h1);
   assert.match(await page.textContent(".ps-info"), /균형 계수 값/);
   // 같은 질문은 이 페이지에서 다시 부르지 않음
   await page.fill(".ps-input", "x");

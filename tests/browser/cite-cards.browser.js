@@ -153,7 +153,9 @@ test("다시 탭하면 이번 세션의 카드로 바로 (재요청 없음), 바
 
 test("GitHub 링크 탭: 떠나지 않고 저장소 미리보기 peek", async browser => {
   const page = await newPage(browser);
-  await page.evaluate(() => document.querySelector('#paper a[href="https://github.com/example/sparse-moe"]').click());
+  // 본문의 링크 (overview 카드의 '코드 ↗' 칩처럼 .pr-ui 안의 같은 주소 링크는 그 기능의 컨트롤이라 새 탭으로 열림)
+  await page.evaluate(() => [...document.querySelectorAll('#paper a[href="https://github.com/example/sparse-moe"]')]
+    .find(a => !a.closest(".pr-ui")).click());
   await until(page, () => document.querySelector(".cc-repo .cc-abs"));
   const r = await page.evaluate(() => ({
     url: location.href, title: document.querySelector(".pr-peek-head b").textContent,

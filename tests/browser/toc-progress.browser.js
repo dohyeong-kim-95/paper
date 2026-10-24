@@ -100,7 +100,17 @@ test("지금 섹션 표시: 스크롤하면 바뀌고(하위 섹션·부록), 40
     await sleep(250);
     return page.evaluate(() => document.getElementById("bar-section").textContent);
   };
-  // 맨 위: 40% 선이 이미 초록 안 (짧은 제목·저자)
+  // 맨 위: 40% 선이 초록 제목 아래면 'Abstract', 위면 원래 제목. 다른 기능이 저자 뒤에 카드(overview 요약 등)를
+  // 넣거나 띠에 칩을 올리면 초록이 40% 선 아래로 밀릴 수 있으니, 실제 위치로 기대값을 정함
+  const top0 = await page.evaluate(() => [document.querySelector(".ltx_abstract").getBoundingClientRect().top <= innerHeight * 0.4,
+    document.getElementById("bar-section").textContent]);
+  assert.equal(top0[1], top0[0] ? "Abstract" : "2401.00001");
+  // 초록 제목이 40% 선 바로 위로 오면 'Abstract'
+  await page.evaluate(() => {
+    const el = document.querySelector(".ltx_abstract");
+    window.scrollTo(0, Math.max(0, el.getBoundingClientRect().top + scrollY - (innerHeight * 0.4 - 20)));
+  });
+  await sleep(250);
   assert.equal(await page.evaluate(() => document.getElementById("bar-section").textContent), "Abstract");
   assert.equal(await at("S2.SS1"), "2.1 Training objective");
   assert.equal(await at("A1"), "Appendix A Additional results");
@@ -131,7 +141,8 @@ test("진행 막대: 헤더 아래 띠 첫 줄, 섹션 경계 눈금, 스크롤�
     const vis = [...ts.children].filter(c => getComputedStyle(c).display !== "none");
     const bar = document.querySelector(".toc-progress").getBoundingClientRect(), hd = document.getElementById("bar").getBoundingClientRect();
     return { first: vis[0].dataset.slot, ticks: document.querySelectorAll(".toc-tick").length,
-      stackH: ts.offsetHeight, overHeader: Math.round(hd.bottom - bar.top), barH: Math.round(bar.height) };
+      // 띠의 다른 줄(상태 칩 등)은 다른 기능 몫: 진행 막대 줄 자체가 3px만 차지하는지
+      stackH: ts.querySelector('[data-slot="toc-progress"]').offsetHeight, overHeader: Math.round(hd.bottom - bar.top), barH: Math.round(bar.height) };
   });
   assert.equal(r0.first, "toc-progress");
   assert.ok(r0.ticks >= 2, `눈금 ${r0.ticks}개`);
@@ -153,7 +164,8 @@ test("진행 막대: 헤더 아래 띠 첫 줄, 섹션 경계 눈금, 스크롤�
   const r1 = await page.evaluate(() => {
     const b = document.querySelector(".toc-progress").getBoundingClientRect(), tr = document.querySelector(".toc-track").getBoundingClientRect();
     const hit = document.elementFromPoint(b.left + b.width / 2, b.top + 8);
-    return { top: Math.round(b.top), h: Math.round(b.height), track: Math.round(tr.top - b.top), stackH: document.getElementById("top-stack").offsetHeight,
+    return { top: Math.round(b.top), h: Math.round(b.height), track: Math.round(tr.top - b.top),
+      stackH: document.querySelector('#top-stack > [data-slot="toc-progress"]').offsetHeight,
       hit: !!(hit && hit.closest(".toc-progress")) };
   });
   assert.deepEqual(r1, { top: 0, h: 10, track: 0, stackH: 3, hit: true });

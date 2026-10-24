@@ -417,7 +417,11 @@ class FeatureAssetTests(CoreTestCase):
         harness = ("globalThis.window = globalThis; let ready = 0; window.PaperApp = { featuresReady: () => ready++ };"
                    "const errs = []; console.error = (n, e) => errs.push(n);\n" + body +
                    "\nprocess.stdout.write(JSON.stringify([window.__a, window.__c, ready, errs]));")
-        r = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+        # 전체 기능 번들은 커서 `node -e`의 인자 길이 제한(ARG_MAX)을 넘음 → 임시 파일로 실행
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "harness.js"
+            script.write_text(harness, encoding="utf-8")
+            r = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=30)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout), ["가\u2028나", 1, 1, ["[feature] zz-b.js"]])
 

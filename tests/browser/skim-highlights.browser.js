@@ -66,9 +66,9 @@ const viaMenu = page => page.evaluate(() => {
   [...document.querySelectorAll(".pr-menu-item")].find(b => b.textContent.includes("핵심 문장")).click();
   return { same: document.getElementById("paper").innerHTML === before, marks: document.querySelectorAll("#paper mark").length };
 });
+// 띠(#status-strip)에는 다른 기능(용어·요약 등)의 칩도 함께 오르므로, 이 기능의 칩만 봄
 const strip = page => page.evaluate(() => ({
-  hidden: document.getElementById("status-strip").hidden,
-  chip: document.querySelector('.pr-status[data-key="skim-highlights"]')?.dataset.state || null,
+  chip: document.querySelector('#status-strip .pr-status[data-key="skim-highlights"]')?.dataset.state || null,
 }));
 
 test("유휴 시간에 받아 두고 점 표시, 메뉴로 켜면 역할별로 칠함 (DOM 그대로), 켜져 있으면 메뉴가 목록을 열고 스위치로 끔", async browser => {
@@ -229,7 +229,8 @@ test("실패 꼬리 → 상태 칩 오류 + '다시'(retry=1), 도착한 문장�
   await page.waitForSelector(".sk-legend-peek");
   assert.equal(await page.evaluate(() => document.querySelector(".sk-note").textContent), "불러오지 못했습니다다시");
   await page.evaluate(() => PaperUI.closeLayers(() => true));
-  assert.equal(await page.evaluate(() => PaperApp.offlineUrls().length), 0, "실패한 응답은 오프라인 목록에 안 넣음");
+  assert.equal(await page.evaluate(() => PaperApp.offlineUrls().filter(u => u.startsWith("/api/skim-highlights/")).length), 0,
+    "실패한 응답은 오프라인 목록에 안 넣음 (overview 등 다른 기능의 주소는 따로)");
   await page.click('.pr-status[data-key="skim-highlights"] button');
   await until(page, () => CSS.highlights.has("sk-limit"));
   assert.match(page.skims[1], /\?retry=1$/);
@@ -244,10 +245,10 @@ test("꺼 둔 채 미리 받다 실패하면 조용히 (띠에 칩 없음), 켜�
   for (let i = 0; i < 160 && !page.skims.length; i++) await page.waitForTimeout(50);
   assert.equal(page.skims.length, 1, "유휴 시간에 미리 받기 시작");
   await page.waitForTimeout(500); // 느린 생성 (400ms 넘음)
-  assert.deepEqual(await strip(page), { hidden: true, chip: null }, "생성 중에도 칩 없음");
+  assert.deepEqual(await strip(page), { chip: null }, "생성 중에도 칩 없음");
   await page.waitForTimeout(600); // 실패 도착
   assert.equal(page.skims.length, 1);
-  assert.deepEqual(await strip(page), { hidden: true, chip: null }, "실패해도 칩 없음");
+  assert.deepEqual(await strip(page), { chip: null }, "실패해도 칩 없음");
   assert.equal(await page.evaluate(() => document.getElementById("bar-more").classList.contains("pr-dot")), false);
   await viaMenu(page); // 켬 → 다시 생성
   await until(page, () => CSS.highlights.has("sk-limit"));
