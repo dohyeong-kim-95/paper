@@ -143,8 +143,27 @@
     while (lo <= hi) { const mid = (lo + hi) >> 1; if (runs[mid].start <= start) { k = mid; lo = mid + 1; } else hi = mid - 1; }
     return k >= 0 && end <= runs[k].end ? runs[k] : null;
   }
+  // 정규화하면 같은 항목 합치기 (서버 키보다 정밀: 'load-balancing loss'/'load balancing loss', \mathcal L/\mathcal{L}).
+  // 정의(defs)는 이어 붙임(중복 제외, 최대 4개, 위치별 정의 고르기가 전부 보도록), 약어(a)는 합집합, ko는 첫 비지 않은 값.
+  // 항목은 {defs: [{d, q}], a?, ko?, _k?}. d·q는 합친 뒤의 첫 정의
+  const MAX_DEFS = 4;
+  function mergeEntries(list, keyOf) {
+    const out = [], byKey = new Map();
+    for (const e of list || []) {
+      const k = keyOf(e), prev = k ? byKey.get(k) : null;
+      if (!prev) { if (k) byKey.set(k, e); out.push(e); continue; }
+      for (const d of e.defs || []) if (prev.defs.length < MAX_DEFS && !prev.defs.some(x => x.d === d.d && x.q === d.q)) prev.defs.push(d);
+      if (Array.isArray(e.a) && Array.isArray(prev.a)) {
+        const have = new Set([normTerm(prev.t), ...prev.a.map(normTerm)]);
+        for (const a of e.a) if (!have.has(normTerm(a))) { have.add(normTerm(a)); prev.a.push(a); }
+      }
+      if (!prev.ko && e.ko) prev.ko = e.ko;
+    }
+    for (const e of out) if (e.defs && e.defs.length) { e.d = e.defs[0].d; e.q = e.defs[0].q; }
+    return out;
+  }
 
-  const api = { normTerm, isAcronym, termRegex, compileTerms, matchOne, resolveOverlaps, findTermMatches, firstPer, runAt, texTokens, normTex, symbolsIn, pickDef, searchEntries, groupUses };
+  const api = { normTerm, isAcronym, termRegex, compileTerms, matchOne, resolveOverlaps, findTermMatches, firstPer, runAt, texTokens, normTex, symbolsIn, pickDef, searchEntries, groupUses, mergeEntries };
   if (typeof module !== "undefined") module.exports = api;
   if (typeof document === "undefined") return;
   if (document.body.dataset.page !== "paper") return;
@@ -176,10 +195,11 @@
 
   // ---------- 불러오기 ----------
   function prepare(d) {
-    const terms = (d.terms || []).filter(t => t && t.t).map(t => ({ ...t, a: Array.isArray(t.a) ? t.a : [], _k: normTerm(t.t), defs: t.defs && t.defs.length ? t.defs.map(x => ({ ...x })) : [{ d: t.d, q: t.q }] }));
-    const symbols = (d.symbols || []).filter(s => s && s.tex).map(s => ({ ...s, _n: normTex(s.tex), defs: s.defs && s.defs.length ? s.defs.map(x => ({ ...x })) : [{ d: s.d, q: s.q }] }));
+    const terms = mergeEntries((d.terms || []).filter(t => t && t.t).map(t => ({ ...t, a: Array.isArray(t.a) ? t.a.slice() : [], _k: normTerm(t.t), defs: t.defs && t.defs.length ? t.defs.map(x => ({ ...x })) : [{ d: t.d, q: t.q }] })), t => t._k);
+    const symbols = mergeEntries((d.symbols || []).filter(s => s && s.tex).map(s => ({ ...s, _n: normTex(s.tex), defs: s.defs && s.defs.length ? s.defs.map(x => ({ ...x })) : [{ d: s.d, q: s.q }] })), s => s._n);
     return { terms, symbols, compiled: compileTerms(terms) };
   }
+  let errChip = false; // '용어 ✕ 다시' 칩이 떠 있음
   function load(retry = false) {
     if (data) return Promise.resolve(data);
     if (loadP && !retry) return loadP;
@@ -194,11 +214,14 @@
       data = prepare(await r.json());
       clearTimeout(t);
       App.addOfflineUrl(URL_);
-      if (shown) UI.status("glossary", "용어", "ready");
+      // 성공하면 언제나 칩 정리: 400ms 안에 끝난 재시도(디스크 캐시)도 남은 오류 칩을 '✓'로 바꿔 지움
+      UI.status("glossary", "용어", shown || errChip ? "ready" : null);
+      errChip = false;
       return data;
     }).catch(e => {
       clearTimeout(t);
       loadP = null;
+      errChip = true;
       UI.status("glossary", "용어", "error", { onRetry: () => load(true).then(ensureApplied).catch(err) });
       throw e;
     });
@@ -238,7 +261,8 @@
     }
     repaint();
     await markMath();
-    await syncRuby();
+    // 루비는 기다리지 않음: 선택이 풀릴 때까지 기다릴 수 있어 PaperApp.idle 줄(한 번에 하나)을 막으면 안 됨
+    syncRuby().catch(err);
   }
   const ensureApplied = () => (appliedP = appliedP || apply().catch(e => { appliedP = null; err(e); }));
   function repaint() {
@@ -432,8 +456,12 @@
   }
 
   // ---------- '용어' 목록 ----------
+  let listRuby = null; // 열린 목록의 '용어 한국어 병기' 스위치
   function openList() {
     const input = h("input", { type: "search", class: "gl-q", placeholder: "용어·기호 검색 (영어·한국어)", "aria-label": "용어·기호 검색", enterkeyhint: "search" });
+    const sw = h("input", { type: "checkbox", role: "switch", class: "gl-ruby-sw", checked: wantRuby, onchange: () => setRuby(sw.checked) });
+    const rubyRow = h("label", { class: "gl-opt" }, sw,
+      h("span", { class: "gl-opt-t" }, h("b", { text: "용어 한국어 병기" }), h("span", { class: "gl-opt-d", text: "밑줄 친 용어 위에 한국어 뜻을 작게 (알아요 제외)" })));
     const listEl = h("div", { class: "gl-items" });
     let close = null;
     const render = () => {
@@ -472,15 +500,22 @@
     };
     input.addEventListener("input", render);
     listRender = render;
-    close = UI.peek({ title: "용어·기호", body: h("div", { class: "gl-list" }, input, listEl), size: "large", className: "gl-list-peek",
-      onClose: () => { if (listRender === render) listRender = null; } });
+    listRuby = sw;
+    close = UI.peek({ title: "용어·기호", body: h("div", { class: "gl-list" }, input, rubyRow, listEl), size: "large", className: "gl-list-peek",
+      onClose: () => { if (listRender === render) listRender = null; if (listRuby === sw) listRuby = null; } });
     if (data) { render(); ensureApplied().then(render); } else start(false);
   }
 
-  // ---------- 루비 병기 (읽기 설정 '용어 한국어 병기': pr:reading-settings.ruby) ----------
-  // 밑줄 친 용어 위에 한국어를 작게. PaperAnchor.wrap만 사용: 감싼 <ruby>는 본문(색인 그대로), <rt>만 pr-ui
-  let wantRuby = !!((store.get("reading-settings", null) || {}).ruby);
+  // ---------- 루비 병기 ('용어 한국어 병기': '용어' 목록의 스위치 → pr:glossary:ruby) ----------
+  // 밑줄 친 용어 위에 한국어를 작게. PaperAnchor.wrap만 사용: 감싼 <ruby>는 본문(색인 그대로), <rt>만 pr-ui.
+  // 아직 스위치를 쓴 적이 없으면 pr:reading-settings.ruby(§6 모양)를 따름. 읽기 설정의 paper:settings {key: "ruby"}도
+  // 받아 자기 키에 옮겨 둠 (어느 쪽에서 바꾸든 마지막 선택이 다음 논문에도)
+  const RUBY = "glossary:ruby";
+  const ownRuby = store.get(RUBY, null);
+  let wantRuby = typeof ownRuby === "boolean" ? ownRuby : !!((store.get("reading-settings", null) || {}).ruby);
   let rubyEls = [], rubyGen = 0;
+  const rubyItem = new WeakMap(); // <ruby> → 칠한 출현 (rt 탭, Highlight API 없는 브라우저의 탭)
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
   const liveSelection = () => { const s = document.getSelection(); return !!(s && !s.isCollapsed && s.rangeCount); };
   function clearRuby() {
     if (!rubyEls.length) return;
@@ -491,37 +526,53 @@
   }
   async function syncRuby(force = false) {
     const gen = ++rubyGen;
+    const stale = () => gen !== rubyGen;
     if (!wantRuby || !data) { clearRuby(); return; }
     if (rubyEls.length && !force) return;
     // 사용자가 글자를 선택하고 있으면 텍스트 노드를 옮기지 않음 (선택이 깨짐) → 풀릴 때까지 대기
-    while (liveSelection()) { await new Promise(r => setTimeout(r, 800)); if (gen !== rubyGen) return; }
+    while (liveSelection()) { await sleep(800); if (stale()) return; }
     clearRuby();
-    let t0 = now();
-    for (const m of painted) {
-      const t = data.terms[m.i];
-      if (!t.ko || normTerm(t.ko) === t._k) continue;
-      const els = A.wrap(m.start, m.end, () => h("ruby", { class: "gl-ruby" }));
-      if (els.length) { els[els.length - 1].append(h("rt", { class: "pr-ui", text: t.ko })); rubyEls.push(...els); }
-      if (now() - t0 > 12) {
-        await yieldIdle();
-        t0 = now();
-        if (gen !== rubyGen) return;
-        while (liveSelection()) { await new Promise(r => setTimeout(r, 800)); if (gen !== rubyGen) return; }
+    // wrap은 조용히(silent) 하고 다른 기능의 다시 칠하기(paper:dom-changed)는 몰아서: 300ms에 한 번 + 끝에 한 번
+    let t0 = now(), last = t0, dirty = false;
+    const flush = () => { if (dirty) { dirty = false; last = now(); A.changed(); } };
+    try {
+      for (const m of painted) {
+        const t = data.terms[m.i];
+        if (!t.ko || normTerm(t.ko) === t._k) continue;
+        const els = A.wrap(m.start, m.end, () => h("ruby", { class: "gl-ruby" }), { silent: true });
+        if (els.length) {
+          els[els.length - 1].append(h("rt", { class: "pr-ui", text: t.ko }));
+          for (const el of els) rubyItem.set(el, m);
+          rubyEls.push(...els);
+          dirty = true;
+        }
+        if (now() - t0 > 12) {
+          if (now() - last > 300) flush();
+          await yieldIdle();
+          t0 = now();
+          if (stale()) return;
+          while (liveSelection()) { flush(); await sleep(800); if (stale()) return; }
+        }
       }
-    }
+    } finally { flush(); }
   }
-  App.on("settings", d => {
-    if (!d || d.key !== "ruby") return;
-    wantRuby = !!d.value;
+  function setRuby(on) {
+    wantRuby = !!on;
+    store.set(RUBY, wantRuby);
+    if (listRuby) listRuby.checked = wantRuby;
     if (wantRuby && !data) load().then(ensureApplied).catch(err);
     else syncRuby(true).catch(err);
-  });
+  }
+  App.on("settings", d => { if (d && d.key === "ruby" && !!d.value !== wantRuby) setRuby(d.value); });
 
   // ---------- 탭: 칠한 용어 (paintedAt), 문단 안 수식 (display 수식 표는 equation-tools 몫) ----------
   App.addTapHandler({
     id: "glossary", priority: 70,
     test: e => {
       if (!data) return null;
+      // 루비로 감싼 용어: 위의 한국어(<rt>, pr-ui라 offsetAtPoint가 null)를 눌러도, Highlight API가 없어도 열림
+      const rb = e.target && e.target.closest ? e.target.closest("ruby.gl-ruby") : null;
+      if (rb && rubyItem.has(rb)) return { term: rubyItem.get(rb) };
       if (painted.length && hasHL()) {
         const k = A.paintedAt("gl-term", e.clientX, e.clientY);
         if (k >= 0 && painted[k]) return { term: painted[k] };
