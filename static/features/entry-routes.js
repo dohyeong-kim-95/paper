@@ -175,7 +175,8 @@
       const q = clipQuote(s.text);
       let prefix = "", count = null;
       try {
-        const norm = A.normalize(A.index().text);
+        // 색인의 normMap은 기반이 idx.nm에 캐시함(색인 무효화 때 함께 버려짐). 탭마다 다시 정규화하지 않음
+        const idx = A.index(), norm = (idx.nm || (idx.nm = A.normMap(idx.text))).norm;
         count = str => countIn(norm, A.normalize(str));
         if (needsPrefix(norm, A.normalize(q))) prefix = cutTail(String(s.prefix || "").replace(/\s+/g, " "), 24).trimStart();
       } catch { /* 앞 문맥·브라우저 지시자 없이 */ }

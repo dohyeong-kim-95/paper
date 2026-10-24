@@ -25,6 +25,7 @@ STRONG_RE = re.compile(
 )
 SHARE_ID_RE = re.compile(r"[A-Za-z0-9_-]{8,32}")
 ABS_TTL = 86400  # 초록 메타데이터 디스크 캐시 1일 (그 사이 HTML이 생기면 훅 자체가 안 불림)
+ABS_MISS_TTL = 6 * 3600  # arXiv에 없는 id도 6시간 기억: 없는 id 반복 요청이 전역 arXiv 스로틀(3초/건)을 잡아먹지 않게
 SHARE_MAX = 300_000  # 공유 하나의 최대 크기 (바이트)
 # 공유 만들기는 계정 없이 디스크에 쓰므로 (논문·Claude 결과 캐시와 같은 폴더) 전체 크기와 빈도를 묶어 둠
 SHARE_DISK_MAX = 100_000_000  # 공유 파일 전체 상한 (바이트). 닿으면 SHARE_KEEP보다 오래된 공유부터 지우고, 그래도 넘으면 507
@@ -83,8 +84,14 @@ async def share_target(title: str = "", text: str = "", url: str = ""):
 async def abstract_meta(aid: str) -> dict | None:
     path = core.task_path(aid, "entry-routes.abs")
     hit = core.read_json(path)
-    if isinstance(hit, dict) and time.time() - hit.get("ts", 0) < ABS_TTL:
-        return hit
+    if isinstance(hit, dict):
+        age = time.time() - hit.get("ts", 0)
+        if hit.get("missing"):
+            if age < ABS_MISS_TTL:
+                return None
+            hit = None
+        elif age < ABS_TTL:
+            return hit
 
     async def fetch():
         try:
@@ -94,6 +101,7 @@ async def abstract_meta(aid: str) -> dict | None:
         base = re.sub(r"v\d+$", "", aid)
         entry = next((e for e in entries if e["id"] == base), None)
         if not entry:
+            core.write_json(path, {"missing": True, "ts": int(time.time())})
             return None
         value = {**entry, "ts": int(time.time())}
         core.write_json(path, value)

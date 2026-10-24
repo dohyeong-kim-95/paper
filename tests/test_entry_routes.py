@@ -134,6 +134,9 @@ class AbstractPageTests(CoreTestCase):
         self.assertIn("HTML 버전이 없습니다", r.text)
         self.http.arxiv()  # 픽스처에 없는 id (오류 항목만)
         self.assertEqual(self.client.get("/paper/2499.99999").status_code, 404)
+        self.http.calls.clear()  # 없는 id는 음성 캐시: 다시 와도 arXiv API(전역 스로틀)를 안 부름
+        self.assertEqual(self.client.get("/paper/2499.99999").status_code, 404)
+        self.assertFalse([u for u in self.http.calls if "export.arxiv.org" in u])
         self.http.calls.clear()
         r = self.client.get("/paper/not-an-id")
         self.assertEqual(r.status_code, 404)
