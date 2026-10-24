@@ -306,6 +306,151 @@ test("paper:open-figure {figureEl | img}: 그 그림·패널에서 열림", asyn
   await page.context().close();
 });
 
+// 결과표 속 아이콘, 하위 표, captionof로 나란히 둔 Figure 7 + Table 7 (LaTeXML 구조 그대로)
+const EXTRA_FLOATS = () => {
+  const t = document.getElementById("S2.T1"), A = "https://arxiv.org/html/2401.00001v1/";
+  const mk = (cls, id, html) => Object.assign(document.createElement("figure"), { className: cls, id, innerHTML: html });
+  t.after(
+    mk("ltx_table", "S2.T9", `<figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">Table 9: </span>Comparison with logos.</figcaption><table class="ltx_tabular"><tr><td><img src="${A}logo1.png" width="16" height="16" class="ltx_graphics"> GPT</td><td>91.2</td></tr><tr><td><img src="${A}logo2.png" width="16" height="16" class="ltx_graphics"> Llama</td><td>85.1</td></tr></table>`),
+    mk("ltx_table", "S2.T8", `<div class="ltx_flex_figure"><div class="ltx_flex_cell"><figure class="ltx_table ltx_figure_panel" id="S2.T8.st1"><figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">(a) </span>Dataset X</figcaption><table class="ltx_tabular"><tr><td>1</td><td>2</td></tr></table></figure></div><div class="ltx_flex_cell"><figure class="ltx_table ltx_figure_panel" id="S2.T8.st2"><figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">(b) </span>Dataset Y</figcaption><table class="ltx_tabular"><tr><td>3</td><td>4</td></tr></table></figure></div></div><figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">Table 8: </span>Two datasets.</figcaption>`),
+    mk("ltx_figure", "S2.F7", `<div class="ltx_flex_figure"><div class="ltx_flex_cell"><figure class="ltx_figure ltx_figure_panel ltx_minipage" id="S2.F7.fig1"><img src="${A}x7.png" width="300" height="200" class="ltx_graphics"><figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">Figure 7: </span>Left plot.</figcaption></figure></div><div class="ltx_flex_cell"><figure class="ltx_table ltx_figure_panel ltx_minipage" id="S2.T7"><figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">Table 7: </span>Right table.</figcaption><table class="ltx_tabular"><tr><td>acc</td><td>99</td></tr></table></figure></div></div>`));
+};
+const openFig = (page, id) => page.evaluate(id => document.dispatchEvent(new CustomEvent("paper:open-figure", { detail: { figureEl: document.getElementById(id) } })), id);
+
+test("표 속 아이콘·하위 표·나란히 둔 그림+표: 표는 통째로, 패널마다 제목·캡션, 모아보기에 Table 7 칸", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  await page.evaluate(EXTRA_FLOATS);
+  const content = () => page.evaluate(() => ({ table: !!document.querySelector(".fv-content table"), img: !!document.querySelector(".fv-content > img"),
+    text: document.querySelector(".fv-content").textContent.replace(/\s+/g, " ").trim() }));
+  // 로고가 든 표: 표 하나로 (로고 하나씩이 아님). 로고를 눌러도 표
+  await openFig(page, "S2.T9");
+  await until(page, () => document.querySelector(".fv-viewer"));
+  let v = await viewer(page);
+  assert.deepEqual([v.title, v.clone, v.share], ["Table 9 · 6 / 11", true, false]);
+  let c = await content();
+  assert.ok(c.table && !c.img && /GPT.*Llama/.test(c.text), JSON.stringify(c));
+  await page.keyboard.press("Escape");
+  await until(page, () => !document.querySelector(".fv-viewer"));
+  await page.evaluate(() => document.querySelector('[id="S2.T9"] img').scrollIntoView({ block: "center" }));
+  await page.click('[id="S2.T9"] img');
+  await until(page, () => document.querySelector(".fv-viewer"));
+  assert.equal((await viewer(page)).title, "Table 9 · 6 / 11");
+  // 하위 표: 패널마다, 패널 캡션 + 바깥 캡션
+  await page.keyboard.press("ArrowRight");
+  v = await viewer(page);
+  assert.equal(v.title, "Table 8 (a) · 7 / 11");
+  assert.match(v.cap, /\(a\) Dataset X.*Table 8: Two datasets/);
+  assert.ok((await content()).table);
+  await page.keyboard.press("ArrowRight");
+  assert.equal((await viewer(page)).title, "Table 8 (b) · 8 / 11");
+  // 나란히 둔 Figure 7 + Table 7: 각자 제 번호로, 표도 넘겨서 닿음
+  await page.keyboard.press("ArrowRight");
+  v = await viewer(page);
+  assert.deepEqual([v.title, v.img, v.cap], ["Figure 7 · 9 / 11", "x7.png", "Figure 7: Left plot."]);
+  await page.keyboard.press("ArrowRight");
+  v = await viewer(page);
+  assert.deepEqual([v.title, v.clone, v.cap], ["Table 7 · 10 / 11", true, "Table 7: Right table."]);
+  // ref-peek가 Table 7을 열어 달라고 하면 Table 7 (Figure 7 그림이 아님)
+  await openFig(page, "S2.F1");
+  await until(page, () => document.querySelector(".fv-title").textContent.startsWith("Figure 1"));
+  await openFig(page, "S2.T7");
+  await until(page, () => document.querySelector(".fv-title").textContent.startsWith("Table 7"));
+  assert.ok((await content()).table);
+  // 바깥 하위 표 묶음을 열면 첫 패널
+  await openFig(page, "S2.T8");
+  await until(page, () => document.querySelector(".fv-title").textContent.startsWith("Table 8 (a)"));
+  await page.keyboard.press("Escape");
+  await until(page, () => !document.querySelector(".fv-viewer"));
+  // 모아보기: 번호마다 한 칸, 표는 축소 복제본(로고만 늘어놓지 않음)
+  await page.click("#bar-more");
+  await page.click(".pr-menu-item:has-text('그림·표 모아보기')");
+  await until(page, () => document.querySelector(".fv-grid-peek"));
+  const tiles = await page.evaluate(() => [...document.querySelectorAll(".fv-tile")].map(t => [t.querySelector("b").textContent, t.querySelector(".fv-thumb > img") ? "img" : "mini"]));
+  assert.deepEqual(tiles, [["Figure 1", "img"], ["Figure 2", "img"], ["Figure 3", "mini"], ["Table 1", "mini"], ["Table 9", "mini"],
+    ["Table 8", "mini"], ["Figure 7", "img"], ["Table 7", "mini"], ["Algorithm 1", "mini"]]);
+  assert.ok(await page.evaluate(() => /Dataset X/.test(document.querySelectorAll(".fv-tile")[5].querySelector(".fv-mini").textContent)), "하위 표 캡션이 썸네일에 남음");
+  await page.click(".fv-tile:has-text('Table 7')");
+  await until(page, () => document.querySelector(".fv-viewer"));
+  assert.equal((await viewer(page)).title, "Table 7 · 10 / 11");
+  assert.deepEqual(myErrors(page), []);
+  await page.context().close();
+});
+
+test("고정 창은 헤더가 다시 나타나거나 위쪽 띠가 커지면 그 아래로 (헤더 ⋯·찾기 줄 버튼을 덮지 않음)", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  await page.evaluate(() => { document.getElementById("S2.F1").scrollIntoView({ block: "center" }); PaperUI.setBarHidden(true); });
+  await sleep(400);
+  await tapImg(page, "S2.F1");
+  await until(page, () => document.querySelector(".fv-viewer"));
+  await page.click("text=📌 고정");
+  await until(page, () => !document.querySelector(".fv-viewer") && document.querySelector(".fv-pin"));
+  const covered = sel => page.evaluate(sel => [...document.querySelectorAll(sel)].filter(b => {
+    const q = b.getBoundingClientRect();
+    return q.width && document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2)?.closest(".fv-pin");
+  }).length, sel);
+  const pinTop = () => page.evaluate(() => document.querySelector(".fv-pin").getBoundingClientRect().top);
+  assert.ok(await pinTop() < 40, "헤더가 숨어 있으면 맨 위 근처");
+  // 헤더가 나타남: 'paper:bar'는 전환(0.2초) 전에 오므로, 바로 그때도 도착 위치 아래로
+  await page.evaluate(() => PaperUI.setBarHidden(false));
+  const barH = await page.evaluate(() => document.getElementById("bar").offsetHeight);
+  assert.ok(await pinTop() >= barH, "전환 중에도 헤더 아래");
+  await sleep(400);
+  assert.equal(await covered("#bar button, #bar a"), 0);
+  // 위쪽 띠에 찾기 줄(44px)이 생김
+  await page.evaluate(() => PaperUI.topSlot("in-paper-search").append(PaperUI.h("div", { style: "display:flex;height:44px;background:var(--bg)" },
+    PaperUI.h("input", { style: "flex:1" }), PaperUI.h("button", { class: "probe-btn", text: "다음" }), PaperUI.h("button", { class: "probe-btn", text: "✕" }))));
+  await until(page, () => document.querySelector(".fv-pin").getBoundingClientRect().top >= document.getElementById("top-stack").getBoundingClientRect().bottom);
+  assert.equal(await covered(".probe-btn"), 0);
+  assert.deepEqual(myErrors(page), []);
+  await page.context().close();
+});
+
+test("핀치가 1.05배 미만에서 끝나면 맞춤으로 (손가락을 하나씩 떼도, 취소돼도), Shift+화살표는 넘기지 않음", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  await tapImg(page, "S2.F1");
+  await until(page, () => document.querySelector(".fv-viewer"));
+  await pointer(page, [["pointerdown", 1, 100, 300], ["pointerdown", 2, 200, 300], ["pointermove", 2, 203, 300, true], ["pointerup", 2, 203, 300], ["pointerup", 1, 100, 300]]);
+  assert.equal((await viewer(page)).scale, 1);
+  await pointer(page, [["pointerdown", 1, 100, 300], ["pointerdown", 2, 200, 300], ["pointermove", 2, 203, 300, true], ["pointercancel", 2, 203, 300], ["pointercancel", 1, 100, 300]]);
+  assert.equal((await viewer(page)).scale, 1);
+  // 핀치 뒤 남은 손가락을 옆으로 끌어도 넘기지 않음 (1.05배 이상이면 그 배율 유지)
+  await pointer(page, [["pointerdown", 1, 100, 300], ["pointerdown", 2, 200, 300], ["pointermove", 2, 260, 300, true], ["pointerup", 2, 260, 300],
+    ["pointermove", 1, 20, 300, true], ["pointerup", 1, 0, 300]]);
+  let v = await viewer(page);
+  assert.deepEqual([v.title, v.scale], ["Figure 1 · 1 / 6", 1.6]);
+  await page.click(".fv-fit");
+  // 맞춤 상태라 이제 밀면 넘어감
+  await pointer(page, [["pointerdown", 1, 300, 300], ["pointermove", 1, 200, 300, true], ["pointerup", 1, 150, 300]]);
+  assert.equal((await viewer(page)).title, "Figure 2 (a) · 2 / 6");
+  // 캡션 글자를 선택한 채 Shift+→: 그림이 바뀌지 않음 (선택 넓히기)
+  await page.evaluate(() => { const r = document.createRange(); r.selectNodeContents(document.querySelector(".fv-cap")); getSelection().removeAllRanges(); getSelection().addRange(r); });
+  await page.keyboard.press("Shift+ArrowRight");
+  assert.equal((await viewer(page)).title, "Figure 2 (a) · 2 / 6");
+  await page.keyboard.press("ArrowRight");
+  assert.equal((await viewer(page)).title, "Figure 2 (b) · 3 / 6");
+  assert.deepEqual(myErrors(page), []);
+  await page.context().close();
+});
+
+test("본문 그림 커서: 터치 화면은 pointer (iOS Safari가 탭을 click으로 보내게), 마우스 화면은 zoom-in", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('[id="S2.F1"] img')).cursor), "zoom-in");
+  await page.context().close();
+  const ctx = await browser.newContext({ viewport: { width: 412, height: 800 }, serviceWorkers: "block", hasTouch: true, isMobile: true });
+  await ctx.route(u => !u.href.startsWith(BASE), r => r.fulfill({ status: 200, body: "", contentType: "text/plain" }));
+  const mobile = await ctx.newPage();
+  await mobile.goto(PAPER);
+  await mobile.waitForFunction(() => window.PaperApp && PaperApp.has("figure-viewer"));
+  const r = await mobile.evaluate(() => ({ fine: matchMedia("(hover: hover) and (pointer: fine)").matches,
+    cursor: getComputedStyle(document.querySelector('[id="S2.F1"] img')).cursor }));
+  assert.deepEqual(r, { fine: false, cursor: "pointer" });
+  await ctx.close();
+});
+
 (async () => {
   let browser;
   try { browser = await chromium.launch(); } catch (e) { console.log("SKIP Chromium 실행 불가:", String(e).split("\n")[0]); process.exit(0); }

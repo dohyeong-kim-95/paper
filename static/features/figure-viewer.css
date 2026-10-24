@@ -1,5 +1,8 @@
 /* figure-viewer: 전체화면 뷰어(z 30) · 그림 고정 창(z 15) · 그림·표 모아보기 격자 */
-#paper figure img { cursor: zoom-in; }
+/* iOS Safari는 click 수신기도 cursor: pointer도 없는 요소를 누르면 click을 보내지 않음 (document의 탭 처리기가 못 받음)
+   → 본문 그림은 pointer, 마우스가 있는 화면에서만 zoom-in */
+#paper figure img { cursor: pointer; }
+@media (hover: hover) and (pointer: fine) { #paper figure img { cursor: zoom-in; } }
 
 /* 뷰어: 화면 전체, 페이지 확대·스크롤로 새지 않게 touch-action: none (캡션만 세로 스크롤) */
 .fv-viewer { position: fixed; inset: 0; z-index: var(--z-viewer); display: flex; flex-direction: column;
@@ -20,7 +23,8 @@
 .fv-content.fv-anim { transition: transform .2s ease; }
 .fv-content > * { animation: fv-in .18s ease-out; }
 @keyframes fv-in { from { opacity: 0; } to { opacity: 1; } }
-.fv-content img { display: block; width: 100%; height: 100%; -webkit-user-drag: none; pointer-events: none; }
+.fv-content > img { display: block; width: 100%; height: 100%; -webkit-user-drag: none; pointer-events: none; }
+.fv-content img { -webkit-user-drag: none; }
 .fv-content.fv-clone { padding: 8px; font-size: 15px; line-height: 1.4; }
 .fv-clone, .fv-clone * { pointer-events: none; }
 .fv-clone figure { margin: 0; }
@@ -71,4 +75,6 @@
 .fv-mini figure { margin: 0; }
 .fv-mini svg { display: block; width: 100%; height: auto; max-height: 90px; }
 .fv-mini table { border-collapse: collapse; }
+/* 표 칸 속 로고·체크 아이콘은 글자 높이로 */
+.fv-mini td img, .fv-mini th img { width: auto; height: auto; max-height: 1.2em; }
 .fv-tile-cap { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; color: var(--muted); font-size: 12px; line-height: 1.35; }

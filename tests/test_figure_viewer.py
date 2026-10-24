@@ -29,7 +29,8 @@ class FigureViewerTests(CoreTestCase):
         # paper_index의 맨 위 그림과 같은 순서 (모아보기 격자 = 이 목록)
         index = core.build_index(BeautifulSoup(core.papers[self.paper_id]["html"], "html.parser"))
         self.assertEqual([f["id"] for f in index["figures"] if f["top"]], [f["id"] for f in tops])
-        # 뷰어 항목: img마다 하나(패널 각각), img가 없으면 그림 통째로 하나 → 6개
+        # 뷰어 항목: img마다 하나(패널 각각), img가 없으면(또는 표·표 칸 속 img면) 그림 통째로 하나 → 6개
+        self.assertEqual([f["id"] for f in tops if f.find("img") and f.find(class_="ltx_tabular")], [])
         self.assertEqual(sum(max(1, len(f.find_all("img"))) for f in tops), 6)
         # 원본 이미지 주소는 절대 주소 (공유·'원본 열기'가 그대로 씀)
         srcs = [img["src"] for img in main.select("figure img")]

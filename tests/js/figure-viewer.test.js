@@ -111,3 +111,29 @@ test("figLabel: 캡션 번호표 정리", () => {
   assert.equal(fv.figLabel("Algorithm\n1 "), "Algorithm 1");
   assert.equal(fv.figLabel(undefined), "");
 });
+
+test("isFullTag: 제 번호가 있는 번호표와 하위 패널 표시 구분", () => {
+  for (const t of ["Figure 7", "Table 7", "Table A.1", "Fig. 3", "그림 3", "Algorithm 1"]) assert.equal(fv.isFullTag(t), true, t);
+  for (const t of ["(a)", "a", "(iii)", "(1)", "", undefined]) assert.equal(fv.isFullTag(t), false, String(t));
+});
+
+test("joinLabel: 바깥 번호 + 패널, 패널이 제 번호면 그것만, 바깥 번호가 없으면 종류 이름", () => {
+  assert.equal(fv.joinLabel("Figure 2", "(a)", "그림"), "Figure 2 (a)");
+  assert.equal(fv.joinLabel("Table 8", "(b)", "표"), "Table 8 (b)");
+  assert.equal(fv.joinLabel("", "Table 7", "표"), "Table 7");      // captionof로 나란히 둔 표 (바깥 캡션 없음)
+  assert.equal(fv.joinLabel("Figure 7", "Table 7", "표"), "Table 7");
+  assert.equal(fv.joinLabel("", "(a)", "그림"), "그림 (a)");
+  assert.equal(fv.joinLabel("Figure 1", "", "그림"), "Figure 1");
+  assert.equal(fv.joinLabel("", "", "알고리즘"), "알고리즘");
+});
+
+test("pinTop: 헤더가 다시 나타나는 중(아직 위에 있음)에도 도착 위치(헤더 + 띠) 아래로", () => {
+  // 보임: 헤더 53 + 띠 0 → 지금 화면에서 헤더가 아직 숨은 자리(0)여도 53
+  assert.equal(fv.pinTop(0, 53, 0, false), 53);
+  // 찾기 줄 44px가 생김 → 97
+  assert.equal(fv.pinTop(53, 53, 44, false), 97);
+  // 숨김: 띠만 (지금 보이는 끝이 더 아래면 그쪽: 숨는 중이거나 맨 위라 띠가 제자리에 있을 때)
+  assert.equal(fv.pinTop(20, 53, 20, true), 20);
+  assert.equal(fv.pinTop(73, 53, 20, true), 73);
+  assert.equal(fv.pinTop(undefined, undefined, undefined, false), 0);
+});

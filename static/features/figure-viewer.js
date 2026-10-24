@@ -43,8 +43,21 @@
   }
   // 캡션 번호표 "Figure 1: " → "Figure 1", "(a) " → "(a)"
   const figLabel = t => String(t || "").replace(/\s+/g, " ").replace(/[\s:：.]+$/, "").trim();
+  // 제 번호가 있는 번호표("Figure 7", "Table A.1", "그림 3")인지, 하위 패널 표시("(a)", "b", "(1)")인지
+  const isFullTag = t => /\d/.test(t || "") && /\p{L}{2,}/u.test(t || "");
+  // 보기 제목: 바깥 번호표 base + 패널 번호표 sub. 패널이 제 번호를 가지면(captionof로 나란히 둔 Table 7) 그것만,
+  // 바깥 번호표가 없으면 종류 이름(kind)으로
+  function joinLabel(base, sub, kind) {
+    if (sub && isFullTag(sub)) return sub;
+    const b = base || kind || "";
+    return sub ? `${b} ${sub}`.trim() : b;
+  }
+  // 고정 창 위쪽 한계: 지금 보이는 헤더·띠 아래 끝(live)과, 전환(0.2초)이 끝난 뒤의 자리(헤더 높이 + 띠 높이,
+  // 헤더가 숨으면 띠만) 중 아래쪽. 헤더가 다시 나타나는 순간에도 고정 창이 헤더 버튼을 덮지 않게
+  const pinTop = (live, barH, stackH, barHidden) => Math.max(0, live || 0, (barHidden ? 0 : barH || 0) + (stackH || 0));
 
-  const api = { MIN, MAX, DOUBLE, clampScale, zoomAround, clampPan, fitScale, pinch, swipeDir, isDoubleTap, stepIndex, clampPin, figLabel };
+  const api = { MIN, MAX, DOUBLE, clampScale, zoomAround, clampPan, fitScale, pinch, swipeDir, isDoubleTap, stepIndex, clampPin, figLabel,
+    isFullTag, joinLabel, pinTop };
   if (typeof module !== "undefined") module.exports = api;
   if (typeof document === "undefined") return;           // node: 여기서 끝
   if (document.body.dataset.page !== "paper") return;
@@ -57,35 +70,54 @@
   const skip = el => !!el.closest(".pr-ui, .tr-ko");
   // 맨 위 단계 그림(하위 패널 figure 제외), 문서 순서. 표·알고리즘도 figure
   const topFigures = () => [...paper.querySelectorAll("figure")].filter(f => !f.parentElement.closest("figure") && !skip(f));
-  // 보기 목록: 그림 속 img마다 하나(패널 각각), img가 없으면(TikZ·표·알고리즘) 그림 통째로 하나
-  function items() {
-    const out = [];
-    for (const fig of topFigures()) {
-      const imgs = [...fig.querySelectorAll("img")].filter(i => !skip(i));
-      if (!imgs.length) { out.push({ fig, img: null, panel: null }); continue; }
-      for (const img of imgs) {
-        const f = img.closest("figure");
-        out.push({ fig, img, panel: f !== fig ? f : null });
-      }
-    }
-    return out;
-  }
-  function indexOf(list, el) {
-    if (!el) return -1;
-    const i = list.findIndex(it => it.img === el || it.panel === el);
-    return i >= 0 ? i : list.findIndex(it => it.fig === el || it.fig.contains(el));
-  }
   const ownCaption = fig => (fig ? [...fig.querySelectorAll("figcaption")].find(c => c.closest("figure") === fig) || null : null);
   const tagOf = fig => figLabel(ownCaption(fig)?.querySelector(".ltx_tag")?.textContent);
   const kindName = fig => (fig.classList.contains("ltx_table") ? "표" : /algorithm/.test(fig.className) ? "알고리즘" : "그림");
-  function labelOf(it) {
-    const base = tagOf(it.fig) || kindName(it.fig), sub = it.panel ? tagOf(it.panel) : "";
-    return sub ? `${base} ${sub}` : base;
+  // 캡션이 있는 하위 figure (하위 그림·하위 표, captionof로 나란히 둔 Figure 7 + Table 7). 가장 바깥 것만
+  function panelsOf(fig) {
+    const ps = [...fig.querySelectorAll("figure")].filter(p => !skip(p) && ownCaption(p));
+    return ps.filter(p => !ps.some(q => q !== p && q.contains(p)));
   }
-  // 그림 본문만 복제 (캡션 빼고, id·기능 UI 없이). 링크는 글자만 남김 (썸네일·고정 창에서 눌리지 않게)
-  function cloneBody(fig) {
-    const c = UI.cloneClean(fig);
-    c.querySelectorAll("figcaption").forEach(x => x.remove());
+  const bodyImgs = el => [...el.querySelectorAll("img")].filter(i => !skip(i) && !i.closest("figcaption"));
+  // 통째 복제로 보는 단위: img가 없거나(TikZ·표·알고리즘) 표·표 칸·코드가 있으면(로고·체크 아이콘이 든 결과표, 표로 늘어놓은 그림)
+  const isCloneUnit = (unit, imgs) => !imgs.length || !!unit.querySelector("table, .ltx_tabular, .ltx_listing");
+  // 단위(맨 위 그림이나 캡션 있는 패널) 하나의 보기 항목: 복제 하나, 아니면 img마다 하나
+  function unitItems(fig, unit, out) {
+    const imgs = bodyImgs(unit);
+    if (isCloneUnit(unit, imgs)) { out.push({ fig, panel: unit === fig ? null : unit, img: null, body: unit }); return; }
+    for (const img of imgs) {
+      const f = unit === fig ? img.closest("figure") : unit;
+      out.push({ fig, panel: f !== fig ? f : null, img, body: null });
+    }
+  }
+  const nodeOf = it => it.img || it.body;
+  // 보기 목록 (문서 순서): 캡션 있는 패널마다 따로, 패널 밖에 따로 놓인 img도 하나씩
+  function items() {
+    const out = [];
+    for (const fig of topFigures()) {
+      const panels = panelsOf(fig);
+      if (!panels.length) { unitItems(fig, fig, out); continue; }
+      const part = [];
+      for (const p of panels) unitItems(fig, p, part);
+      for (const img of bodyImgs(fig)) if (!panels.some(p => p.contains(img))) part.push({ fig, panel: null, img, body: null });
+      part.sort((a, b) => (nodeOf(a).compareDocumentPosition(nodeOf(b)) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+      out.push(...part);
+    }
+    return out;
+  }
+  // 요소 → 보기 항목: 그 img·패널·그림 그 자체, 아니면 그것을 품은 패널(표 속 로고를 누르면 표), 그것이 품은 img, 그림 순
+  function indexOf(list, el) {
+    if (!el) return -1;
+    const tries = [it => it.img === el || it.panel === el || it.body === el || it.fig === el,
+      it => !!it.panel && it.panel.contains(el), it => !!it.img && el.contains(it.img), it => it.fig.contains(el)];
+    for (const t of tries) { const i = list.findIndex(t); if (i >= 0) return i; }
+    return -1;
+  }
+  const labelOf = it => joinLabel(tagOf(it.fig), it.panel ? tagOf(it.panel) : "", kindName(it.panel || it.fig));
+  // 본문만 복제 (그 단위 자신의 캡션만 빼고 하위 패널 캡션 '(a) Dataset X'는 남김, id·기능 UI 없이). 링크는 글자만 (눌리지 않게)
+  function cloneBody(el) {
+    const c = UI.cloneClean(el);
+    c.querySelectorAll("figcaption").forEach(x => { if (x.closest("figure") === c) x.remove(); });
     c.querySelectorAll("a").forEach(a => a.replaceWith(...a.childNodes));
     return c;
   }
@@ -97,10 +129,11 @@
     const r = img.getBoundingClientRect();
     return r.width && r.height ? { w: r.width, h: r.height } : { w: 300, h: 200 };
   }
-  // 헤더와 위쪽 띠 아래 끝 (자동 숨김이면 0 근처)
+  // 헤더와 위쪽 띠 아래 끝 (자동 숨김이면 띠만). 전환 중이면 도착 위치까지 (pinTop)
   function topEdge() {
-    const b = id => document.getElementById(id)?.getBoundingClientRect().bottom || 0;
-    return Math.max(0, b("bar"), b("top-stack"));
+    const bar = document.getElementById("bar"), ts = document.getElementById("top-stack");
+    const live = Math.max(bar?.getBoundingClientRect().bottom || 0, ts?.getBoundingClientRect().bottom || 0);
+    return pinTop(live, bar?.offsetHeight, ts?.offsetHeight, UI.isBarHidden());
   }
 
   let V = null, gridClose = null, pinEl = null;
@@ -162,7 +195,13 @@
           const n = natOf(el);
           if (cur() === it && v.st.scale <= 1.01 && v.nat && Math.abs(n.w / n.h - v.nat.w / v.nat.h) > 0.01) layout(n);
         });
-      } else el = cloneBody(it.fig);
+      } else {
+        el = cloneBody(it.body);
+        // 복제본 속 그림(표 속 로고 등)이 늦게 받아지면 크기가 바뀜 → 맞춤 상태일 때만 다시 잼
+        for (const im of el.querySelectorAll("img")) {
+          if (!im.complete) im.addEventListener("load", () => { if (cur() === it && v.st.scale <= 1.01) layout(null); }, { once: true });
+        }
+      }
       content.className = `fv-content${it.img ? "" : " fv-clone"}`;
       content.style.cssText = "";
       content.replaceChildren(el);
@@ -190,7 +229,7 @@
         nat = { w: parseFloat(content.style.width), h: content.offsetHeight || 1 };
       }
       v.nat = nat;
-      v.base = fitScale(nat, v.view, cur().img || !cur().fig.querySelector("table, .ltx_listing") ? 4 : 2); // 표·알고리즘은 2배까지
+      v.base = fitScale(nat, v.view, cur().img || !cur().body.querySelector("table, .ltx_tabular, .ltx_listing") ? 4 : 2); // 표·알고리즘은 2배까지
       v.size = { w: nat.w * v.base, h: nat.h * v.base };
       content.style.width = `${nat.w}px`;
       content.style.height = `${nat.h}px`;
@@ -252,6 +291,7 @@
       if (!g.moved && Math.hypot(dx, dy) < 8) return;
       g.moved = true;
       if (g.st0.scale > 1.01) { v.st = clampPan({ scale: g.st0.scale, x: g.st0.x + dx, y: g.st0.y + dy }, v.view, v.size); draw(); }
+      else if (g.pinched) return;                        // 핀치 뒤 남은 손가락: 넘기기·닫기 아님
       else if (Math.abs(dx) >= Math.abs(dy)) draw(dx, 0); // 넘기기 미리보기
       else draw(0, Math.max(0, dy));                     // 아래로 끌어 닫기 미리보기
     }
@@ -262,14 +302,17 @@
       const last = pts.get(e.pointerId);
       pts.delete(e.pointerId);
       if (!g) return;
+      // 핀치가 끝나면(마지막 손가락이 떨어질 때) 거의 맞춤(1.05배 미만)은 맞춤으로
+      const snap = () => set(v.st.scale < 1.05 ? { scale: 1, x: 0, y: 0 } : v.st, true);
       if (g.n === 2) {
-        if (pts.size) begin(true); // 남은 손가락으로 계속 (탭으로 치지 않음)
-        else { g = null; set(v.st.scale < 1.05 ? { scale: 1, x: 0, y: 0 } : v.st, true); } // 거의 맞춤이면 맞춤으로
+        if (pts.size) { begin(true); g.pinched = true; } // 남은 손가락으로 계속 (탭으로 치지 않음)
+        else { g = null; snap(); }
         return;
       }
       if (pts.size) return;
       const gg = g;
       g = null;
+      if (gg.pinched) { lastTap = null; snap(); return; }
       if (!gg.moved) {
         if (e.type !== "pointerup") return;
         const tap = { t: Date.now(), x: last.x, y: last.y };
@@ -323,6 +366,7 @@
     const onKey = e => {
       if (UI.topLayer()?.close !== close || e.altKey || e.ctrlKey || e.metaKey) return;
       const k = e.key;
+      if (e.shiftKey && k.startsWith("Arrow")) return; // Shift+화살표 = 캡션 글자 선택 넓히기
       if (k === "ArrowRight") go(1);
       else if (k === "ArrowLeft") go(-1);
       else if (k === "+" || k === "=") zoomBy(1.5);
@@ -369,21 +413,26 @@
   function unpin() { pinEl?.remove(); pinEl = null; }
   function pin(it) {
     unpin();
-    const label = labelOf(it), target = it.img || it.fig;
+    const label = labelOf(it), target = nodeOf(it);
     const body = h("div", { class: "fv-pin-body", role: "button", tabindex: "0", "aria-label": `${label} 크게 보기` });
     if (it.img) body.append(Object.assign(UI.cloneClean(it.img), { draggable: false })); // id 없는 복제 (본문 id 중복 방지)
-    else body.append(h("div", { class: "fv-pin-clone" }, cloneBody(it.fig)));
+    else body.append(h("div", { class: "fv-pin-clone" }, cloneBody(it.body)));
     const x = h("button", { type: "button", class: "fv-pin-x", text: "✕", "aria-label": "고정 해제", onclick: unpin });
     const el = h("div", { class: "fv-pin pr-ui", role: "group", "aria-label": `고정한 그림: ${label}` },
       h("div", { class: "fv-pin-head" }, h("span", { text: label }), x), body);
     document.body.append(el);
     pinEl = el;
-    // 표·알고리즘 복제본은 창 너비에 맞게 축소
+    // 표·알고리즘 복제본은 창 너비에 맞게 축소 (속의 그림이 늦게 받아지면 다시)
     const c = el.querySelector(".fv-pin-clone");
-    if (c) {
+    const fitClone = () => {
       const k = Math.min(1, body.clientWidth / (c.offsetWidth || 1));
       c.style.transform = `scale(${k})`;
       body.style.height = `${Math.min(c.offsetHeight * k, innerHeight * 0.4)}px`;
+      if (el._fvPos) place(el, el._fvPos);
+    };
+    if (c) {
+      fitClone();
+      for (const im of c.querySelectorAll("img")) if (!im.complete) im.addEventListener("load", () => { if (pinEl === el) fitClone(); }, { once: true });
     }
     const reopen = () => { if (!openAt(target)) unpin(); };
     place(el, { x: innerWidth - el.offsetWidth, y: 0 });
@@ -417,36 +466,51 @@
   let pinDrag = null;
   document.addEventListener("dragstart", e => { if (pinDrag) e.preventDefault(); }, true);
   window.addEventListener("resize", reclampPin);
+  // 헤더 숨김·보임 (topEdge가 도착 위치를 씀), 위쪽 띠에 줄이 생기거나 없어질 때(찾기 줄·상태 칩·오프라인 배너·뜻 칩)
   PaperApp.on("bar", reclampPin);
+  if (typeof ResizeObserver !== "undefined") {
+    const ro = new ResizeObserver(reclampPin);
+    for (const id of ["bar", "top-stack"]) { const el = document.getElementById(id); if (el) ro.observe(el); }
+  }
 
   // ---------- 그림·표 모아보기 (⋯ 메뉴): 썸네일 격자, 누르면 뷰어 (뷰어를 닫으면 격자로 돌아옴) ----------
+  // 모아보기 칸: 맨 위 그림(캡션이 있으면) + 그 안에서 제 번호를 가진 패널(나란히 둔 Figure 7 + Table 7). 둘 다 없으면 그림 통째로
+  function tilesOf(fig) {
+    const numbered = panelsOf(fig).filter(p => isFullTag(tagOf(p)));
+    return ownCaption(fig) || !numbered.length ? [fig, ...numbered] : numbered;
+  }
   function openGrid() {
     if (gridClose) return;
     const figs = topFigures();
     if (!figs.length) { UI.toast("이 논문에는 그림·표가 없습니다"); return; }
     const list = items(), edge = topEdge();
-    const here = figs.findIndex(f => f.getBoundingClientRect().bottom > edge); // 지금 읽는 곳 근처
+    const tiles = figs.flatMap(fig => tilesOf(fig).map(el => ({ fig, el })));
+    const here = tiles.findIndex(t => t.el.getBoundingClientRect().bottom > edge); // 지금 읽는 곳 근처
     const grid = h("div", { class: "fv-grid" });
-    figs.forEach((fig, i) => {
+    tiles.forEach(({ fig, el }, i) => {
+      const others = tiles.filter(t => t.fig === fig && t.el !== el && el.contains(t.el)).map(t => t.el);
+      // 이 칸의 보기 항목 (같은 그림 속 다른 칸의 패널 것은 빼고)
+      const mine = list.filter(it => it.fig === fig && el.contains(nodeOf(it)) && !others.some(o => o.contains(nodeOf(it))));
       const thumb = h("span", { class: "fv-thumb", "aria-hidden": "true" });
-      const imgs = [...fig.querySelectorAll("img")].filter(x => !skip(x)).slice(0, 4);
+      // 썸네일: 그림이면 img, 표·알고리즘(표 속 로고 등)이나 img 없는 것은 축소 복제본
+      const imgs = el.matches(".ltx_table, .ltx_float") ? [] : bodyImgs(el).slice(0, 4);
       if (imgs.length) thumb.append(...imgs.map(im => h("img", { src: srcOf(im), alt: "", loading: "lazy", decoding: "async" })));
-      else thumb.append(h("span", { class: "fv-mini" }, cloneBody(fig)));
-      const capEl = ownCaption(fig);
+      else thumb.append(h("span", { class: "fv-mini" }, cloneBody(el)));
+      const capEl = ownCaption(el);
       let text = null;
       if (capEl) {
         text = UI.cloneClean(capEl);
         text.querySelectorAll(".ltx_tag").forEach(t => t.remove());
         text.querySelectorAll("a").forEach(a => a.replaceWith(...a.childNodes));
       }
-      const label = labelOf({ fig });
+      const label = labelOf({ fig, panel: el === fig ? null : el });
       grid.append(h("button", {
         type: "button", class: "fv-tile", "aria-label": `${label} 크게 보기`, "aria-current": i === here ? "true" : null,
-        onclick: () => { const j = indexOf(list, fig); if (j >= 0) openViewer(list, j); },
+        onclick: () => { const j = mine.length ? list.indexOf(mine[0]) : indexOf(list, el); if (j >= 0) openViewer(list, j); },
       }, thumb, h("b", { text: label }), text ? h("span", { class: "fv-tile-cap" }, ...text.childNodes) : null));
     });
     gridClose = UI.peek({
-      title: `그림·표 모아보기 · ${figs.length}`, body: grid, size: "large", className: "fv-grid-peek",
+      title: `그림·표 모아보기 · ${tiles.length}`, body: grid, size: "large", className: "fv-grid-peek",
       onClose: () => { gridClose = null; },
     });
     const t = grid.children[here];
