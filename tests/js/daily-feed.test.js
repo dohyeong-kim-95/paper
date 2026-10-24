@@ -1,4 +1,4 @@
-// daily-feed 순수 함수: 분야·저자 정규화, 피드 주소, AND/OR 키워드 필터, 날짜 묶음, 새 논문 표시, 서재 추천
+// daily-feed 순수 함수: 분야·저자 정규화, 분야 개수 한도, 피드·논문 주소, AND/OR 키워드 필터, 날짜 묶음, 새 논문 표시, 서재 추천
 "use strict";
 process.env.TZ = "Asia/Seoul"; // 날짜 묶음은 현지 시각 기준
 const { test, assert, load } = require("./_runner");
@@ -22,6 +22,18 @@ test("parseCats: 구분자·중복·최대 개수", () => {
   assert.deepEqual(F.parseCats(""), []);
 });
 
+test("mergeCats: 빈 자리만큼 뒤에 붙이고 있던 분야는 밀어내지 않음", () => {
+  const eight = ["cs.CL", "cs.LG", "cs.AI", "cs.CV", "cs.IR", "cs.RO", "cs.SE", "cs.CR"];
+  assert.equal(F.MAX_CATS, 8);
+  assert.deepEqual(F.mergeCats(eight, ["stat.ML", "eess.AS"]), { cats: eight, added: [], skipped: ["stat.ML", "eess.AS"] });
+  const seven = eight.slice(0, 7);
+  assert.deepEqual(F.mergeCats(seven, ["stat.ML", "cs.CL", "eess.AS"]),
+    { cats: [...seven, "stat.ML"], added: ["stat.ML"], skipped: ["eess.AS"] });
+  assert.deepEqual(F.mergeCats(["cs.CL"], ["cs.cl", "bad!", "q-bio.nc"]), { cats: ["cs.CL", "q-bio.NC"], added: ["q-bio.NC"], skipped: [] });
+  assert.deepEqual(F.mergeCats(eight, []).cats, eight);
+  assert.equal(F.parseCats("a.b c.d e.f g.h i.j k.l m.n o.p q.r", Infinity).length, 9);
+});
+
 test("normAuthor: 글자·공백·.'- 만", () => {
   assert.equal(F.normAuthor("  Yann   LeCun "), "Yann LeCun");
   assert.equal(F.normAuthor("José Müller-Lüdenscheidt"), "José Müller-Lüdenscheidt");
@@ -39,8 +51,15 @@ test("출처 키와 피드 주소", () => {
   assert.equal(F.parseSrc("x:y"), null);
   assert.equal(F.srcKey({ type: "au", value: "Bob" }), "au:Bob");
   assert.equal(F.feedUrl({ type: "cat", value: "cs.CL" }), "/api/daily-feed?cat=cs.CL");
-  assert.equal(F.feedUrl({ type: "au", value: "Alice Kim" }, true), "/api/daily-feed/ko?author=Alice%20Kim");
-  assert.equal(F.feedUrl({ type: "cat", value: "cs.CL" }, true, true), "/api/daily-feed/ko?cat=cs.CL&retry=1");
+  assert.equal(F.feedUrl({ type: "au", value: "Alice Kim" }), "/api/daily-feed?author=Alice%20Kim");
+});
+
+test("paperHref: 새 형식 id는 리더, 옛 형식(cs/0112017)은 arXiv 초록 페이지", () => {
+  assert.equal(F.readerId("2401.00001"), true);
+  assert.equal(F.readerId("cs/0112017"), false);
+  assert.equal(F.readerId("math.GT/0309136"), false);
+  assert.equal(F.paperHref("2401.00001"), "/paper/2401.00001");
+  assert.equal(F.paperHref("cs/0112017"), "https://arxiv.org/abs/cs/0112017");
 });
 
 test("parseQuery: 따옴표 구절·제외어", () => {
@@ -55,7 +74,7 @@ const item = {
   authors: ["Alice Kim"], cat: "cs.CL",
 };
 
-test("matchItem: AND/OR, 단어 시작 일치, 제외어, 한국어", () => {
+test("matchItem: AND/OR, 단어 시작 일치, 제외어", () => {
   assert.equal(F.matchItem(item, ""), true);
   assert.equal(F.matchItem(item, "sparse experts"), true);
   assert.equal(F.matchItem(item, "sparse vision"), false);
@@ -67,7 +86,7 @@ test("matchItem: AND/OR, 단어 시작 일치, 제외어, 한국어", () => {
   assert.equal(F.matchItem(item, "alice"), true); // 저자
   assert.equal(F.matchItem(item, "cs.cl"), true); // 분야
   assert.equal(F.matchItem(item, "전문가"), false);
-  assert.equal(F.matchItem(item, "전문가", "and", { t: "희소 전문가 혼합", b: "토큰을 둘로 보냄" }), true);
+  assert.equal(F.matchItem({ ...item, title: "희소 전문가 혼합" }, "전문가"), true); // 한글은 부분 문자열
   assert.equal(F.matchItem(item, F.parseQuery("token two"), "and"), true);
 });
 

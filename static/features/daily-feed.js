@@ -1,4 +1,4 @@
-// daily-feed: 홈 화면 '오늘의 새 논문' — 관심 분야·팔로우 저자 arXiv 피드, 한국어 제목·한 줄 요약, AND/OR 키워드 필터
+// daily-feed: 홈 화면 '오늘의 새 논문' — 관심 분야·팔로우 저자 arXiv 피드(초록 그대로), AND/OR 키워드 필터
 (function () {
   "use strict";
 
@@ -26,6 +26,15 @@
     }
     return out.slice(0, max);
   }
+  // 지금 분야 뒤에 빈 자리만큼만 붙임 (있던 분야를 밀어내지 않음) → {cats, added, skipped(자리가 없어 못 넣은 것)}
+  function mergeCats(cur, add, max = MAX_CATS) {
+    const out = (cur || []).slice(), added = [], skipped = [];
+    for (const c of parseCats((add || []).join(" "), Infinity)) {
+      if (out.includes(c)) continue;
+      if (out.length < max) { out.push(c); added.push(c); } else skipped.push(c);
+    }
+    return { cats: out, added, skipped };
+  }
   function normAuthor(s) {
     const n = String(s || "").normalize("NFC").replace(/\s+/g, " ").trim();
     return n.length >= 2 && n.length <= 60 && AUTHOR_RE.test(n) ? n : null;
@@ -39,8 +48,10 @@
     const value = m[1] === "cat" ? normCat(m[2]) : normAuthor(m[2]);
     return value ? { type: m[1], value } : null;
   }
-  const feedUrl = (src, ko = false, retry = false) =>
-    `/api/daily-feed${ko ? "/ko" : ""}?${src.type === "au" ? "author" : "cat"}=${encodeURIComponent(src.value)}${retry ? "&retry=1" : ""}`;
+  const feedUrl = src => `/api/daily-feed?${src.type === "au" ? "author" : "cat"}=${encodeURIComponent(src.value)}`;
+  // 리더(/paper/<id>)는 새 형식 id만 열 수 있음. 옛 형식(cs/0112017, 저자 피드에 나옴)은 arXiv 초록 페이지로
+  const readerId = id => /^\d{4}\.\d{4,5}$/.test(String(id || ""));
+  const paperHref = id => (readerId(id) ? `/paper/${id}` : `https://arxiv.org/abs/${id}`);
 
   // 키워드: 'LLM "in-context learning" -survey' → {inc: ["llm", "in-context learning"], exc: ["survey"]}
   function parseQuery(q) {
@@ -60,13 +71,12 @@
     if (/^[\x20-\x7e]+$/.test(t) && /^[a-z0-9]/.test(t)) return new RegExp(`(^|[^a-z0-9])${reEsc(t)}`).test(text);
     return text.includes(t);
   }
-  const haystack = (it, ko) =>
-    [it.title, it.summary, (it.authors || []).join(" "), it.cat, ko && ko.t, ko && ko.b].filter(Boolean).join("\n").toLowerCase();
+  const haystack = it => [it.title, it.summary, (it.authors || []).join(" "), it.cat].filter(Boolean).join("\n").toLowerCase();
   // mode: "and"(모두 포함) | "or"(하나라도). 제외어(-x)는 언제나 제외
-  function matchItem(it, query, mode = "and", ko = null) {
+  function matchItem(it, query, mode = "and") {
     const { inc, exc } = typeof query === "string" ? parseQuery(query) : query;
     if (!inc.length && !exc.length) return true;
-    const text = haystack(it, ko);
+    const text = haystack(it);
     if (exc.some(t => hasTerm(text, t))) return false;
     if (!inc.length) return true;
     return mode === "or" ? inc.some(t => hasTerm(text, t)) : inc.every(t => hasTerm(text, t));
@@ -116,8 +126,8 @@
   };
 
   const api = {
-    DEFAULT_CATS, validCat, normCat, parseCats, normAuthor, srcKey, parseSrc, feedUrl, parseQuery, hasTerm, matchItem,
-    dayLabel, groupByDay, isNew, newest, libraryIds, withDefaults,
+    DEFAULT_CATS, MAX_CATS, validCat, normCat, parseCats, mergeCats, normAuthor, srcKey, parseSrc, feedUrl, readerId, paperHref,
+    parseQuery, hasTerm, matchItem, dayLabel, groupByDay, isNew, newest, libraryIds, withDefaults,
   };
   if (typeof module !== "undefined") module.exports = api;
   if (typeof document === "undefined") return;
@@ -129,14 +139,14 @@
   const sec = UI.homeSection({ id: "daily-feed", title: "오늘의 새 논문" });
   if (!sec) return;
 
-  const PREFS = { active: "", ko: true, view: "list", q: "", mode: "and" };
+  const PREFS = { active: "", view: "list", q: "", mode: "and" };
   const prefs = { ...PREFS, ...(store.get("daily-feed:prefs", {}) || {}) };
   const savePrefs = () => store.set("daily-feed:prefs", prefs);
   const savedCats = store.get("daily-feed:cats", null);
   let cats = Array.isArray(savedCats) ? parseCats(savedCats.join(" ")) : DEFAULT_CATS.slice();
   let authors = (store.get("daily-feed:authors", []) || []).map(normAuthor).filter(Boolean);
-  let items = [], ko = {}, seq = 0, since = "";
-  const cards = new Map(); // id -> {card, titleEl, enEl, blurbEl}
+  let items = [], seq = 0, since = "";
+  const cards = new Map(); // id -> {el, it}
 
   const sources = () => [...cats.map(value => ({ type: "cat", value })), ...authors.map(value => ({ type: "au", value }))];
   const activeSrc = () => {
@@ -152,18 +162,16 @@
   });
   qInput.value = prefs.q;
   const modeBtn = h("button", { class: "df-tool df-mode", type: "button" });
-  const koBtn = h("button", { class: "df-tool", type: "button", text: "한글", title: "한국어 제목·한 줄 요약" });
   const viewBtn = h("button", { class: "df-tool", type: "button", text: "카드", title: "한 장씩 넘겨 보기" });
   const countEl = h("span", { class: "df-count", "aria-live": "polite" });
   const statusEl = h("div", { class: "df-status", role: "status", hidden: true });
   const listEl = h("div", { class: "df-list" });
   sec.classList.add("df-root");
-  sec.append(chipsEl, h("div", { class: "df-tools" }, qInput, modeBtn, koBtn, viewBtn, countEl), statusEl, listEl);
+  sec.append(chipsEl, h("div", { class: "df-tools" }, qInput, modeBtn, viewBtn, countEl), statusEl, listEl);
 
   function syncTools() {
     modeBtn.textContent = prefs.mode === "or" ? "OR" : "AND";
     modeBtn.setAttribute("aria-label", prefs.mode === "or" ? "키워드 조건: 하나라도 포함 (바꾸기)" : "키워드 조건: 모두 포함 (바꾸기)");
-    koBtn.setAttribute("aria-pressed", String(!!prefs.ko));
     viewBtn.setAttribute("aria-pressed", String(prefs.view === "brief"));
     listEl.classList.toggle("df-brief", prefs.view === "brief");
   }
@@ -199,16 +207,14 @@
   // ---------- 카드 ----------
   const libraryAdd = () => window.PaperApp.feature("library")?.add;
   function card(it) {
-    const titleEl = h("a", { class: "df-title", href: `/paper/${it.id}` });
-    const enEl = h("div", { class: "df-en-title", lang: "en", text: it.title });
-    const blurbEl = h("p", { class: "df-blurb" });
+    const local = readerId(it.id), ext = local ? {} : { target: "_blank", rel: "noopener" };
     const more = it.n_authors > it.authors.length ? ` 외 ${it.n_authors - it.authors.length}명` : "";
     const abs = h("details", { class: "df-abs" }, h("summary", { text: "초록" }), h("p", { lang: "en", text: it.summary }));
     if (prefs.view === "brief") abs.open = true;
     const actions = h("div", { class: "df-actions" },
-      h("a", { class: "df-open", href: `/paper/${it.id}`, text: "열기" }),
+      local ? h("a", { class: "df-open", href: paperHref(it.id), text: "열기" }) : null,
       h("a", { class: "df-link", href: `https://arxiv.org/abs/${it.id}`, target: "_blank", rel: "noopener", text: "arXiv" }));
-    if (libraryAdd()) {
+    if (local && libraryAdd()) { // 서재 id는 새 형식만 (리더로 열 수 있는 논문)
       actions.append(h("button", {
         class: "df-link", type: "button", text: "나중에 읽기",
         onclick: () => {
@@ -224,25 +230,13 @@
         it.cat ? h("span", { class: "df-cat", text: it.cat }) : null,
         isNew(it, since) ? h("span", { class: "df-new", text: "새 논문" }) : null,
         h("span", { class: "df-day", text: dayLabel(it.published) })),
-      titleEl, enEl, blurbEl,
+      h("a", { class: "df-title", lang: "en", href: paperHref(it.id), ...ext, text: it.title }),
       h("div", { class: "df-authors" }, it.authors.map(a => h("button", {
         class: "df-au", type: "button", text: a, "aria-label": `${a}: 저자 팔로우·논문 보기`, onclick: () => authorPeek(a),
       })), more ? h("span", { text: more }) : null),
       abs, actions);
-    cards.set(it.id, { el, titleEl, enEl, blurbEl, it });
-    fillCard(it.id);
+    cards.set(it.id, { el, it });
     return el;
-  }
-  // 한국어가 있으면 한국어 제목 + 영어 원제(작게) + 한 줄 요약, 없으면 영어 제목만
-  function fillCard(id) {
-    const c = cards.get(id);
-    if (!c) return;
-    const k = prefs.ko ? ko[id] : null;
-    c.titleEl.textContent = k ? k.t : c.it.title;
-    c.titleEl.lang = k ? "ko" : "en";
-    c.enEl.hidden = !k;
-    c.blurbEl.textContent = k ? k.b : "";
-    c.blurbEl.hidden = !k;
   }
 
   function render() {
@@ -258,7 +252,7 @@
     const query = parseQuery(qInput.value);
     let shown = 0;
     for (const c of cards.values()) {
-      const ok = matchItem(c.it, query, prefs.mode, prefs.ko ? ko[c.it.id] : null);
+      const ok = matchItem(c.it, query, prefs.mode);
       c.el.hidden = !ok;
       if (ok) shown++;
     }
@@ -303,39 +297,14 @@
       const list = await r.json();
       if (my !== seq) return;
       items = Array.isArray(list) ? list : [];
-      ko = {};
       since = baseline(srcKey(src), items);
       render();
       status(items.length ? null : "새 논문이 없습니다", null);
-      if (prefs.ko && items.length) window.PaperApp.idle(() => { loadKo(my); }); // 시작만 유휴 큐에서 (기다리지 않음)
     } catch (e) {
       if (my !== seq) return;
       status(`불러오지 못했습니다 · ${e.message || e}`, "error", load);
     } finally {
       if (my === seq) listEl.removeAttribute("aria-busy");
-    }
-  }
-
-  async function loadKo(my = seq, retry = false) {
-    const src = activeSrc();
-    if (my !== seq || !src || !prefs.ko || !items.length) return;
-    const n = items.length;
-    status("한국어 제목·요약 만드는 중…", "loading");
-    try {
-      const r = await fetch(feedUrl(src, true, retry));
-      if (!r.ok) throw new Error(await errText(r));
-      const map = await r.json();
-      if (my !== seq) return;
-      ko = map && typeof map === "object" ? map : {};
-      if (!prefs.ko) return; // 기다리는 동안 한글을 끔: 받아만 둠
-      for (const id of cards.keys()) fillCard(id);
-      applyFilter();
-      const done = items.filter(it => ko[it.id]).length;
-      if (done < n) status(`한국어 요약 ${done}/${n}`, "error", () => loadKo(seq, true));
-      else status(null);
-    } catch (e) {
-      if (my !== seq) return;
-      status("한국어 요약을 만들지 못했습니다", "error", () => loadKo(seq, true));
     }
   }
 
@@ -362,8 +331,10 @@
     UI.toast(`${value} 삭제됨`, {
       actionLabel: "실행 취소",
       onAction: () => {
-        const l = kind === "cat" ? cats : authors;
-        if (!l.includes(value)) l.splice(Math.min(i, l.length), 0, value);
+        const l = kind === "cat" ? cats : authors, cap = kind === "cat" ? MAX_CATS : MAX_AUTHORS;
+        if (l.includes(value)) return;
+        if (l.length >= cap) { UI.toast(kind === "cat" ? `분야는 ${MAX_CATS}개까지` : `저자는 ${MAX_AUTHORS}명까지 팔로우할 수 있습니다`); return; }
+        l.splice(Math.min(i, l.length), 0, value);
         kind === "cat" ? saveCats() : saveAuthors();
         redraw();
         afterChange();
@@ -398,11 +369,14 @@
         h("h4", { text: "분야 (arXiv 카테고리)" }),
         h("div", { class: "df-tags" }, cats.length ? cats.map(c => tag(c, c, () => removeWithUndo("cat", c, draw))) : h("span", { class: "df-muted", text: "없음" })),
         addForm("예: cs.CV, stat.ML", "분야 추가", v => {
-          const add = parseCats(v).filter(c => !cats.includes(c));
-          if (!add.length) { UI.toast("분야 이름을 확인하세요 (예: cs.CL)"); return false; }
-          cats = parseCats([...cats, ...add].join(" "));
+          const want = parseCats(v, Infinity);
+          if (!want.length) { UI.toast("분야 이름을 확인하세요 (예: cs.CL)"); return false; }
+          const r = mergeCats(cats, want);
+          if (!r.added.length) { UI.toast(r.skipped.length ? `분야는 ${MAX_CATS}개까지` : "이미 들어 있습니다"); return false; }
+          cats = r.cats;
           saveCats();
           afterChange();
+          if (r.skipped.length) UI.toast(`분야는 ${MAX_CATS}개까지 · 못 넣음: ${r.skipped.join(" · ")}`);
           return true;
         }),
         h("div", { class: "df-suggest" }, POPULAR.filter(c => !cats.includes(c)).map(c => h("button", {
@@ -413,9 +387,15 @@
           type: "button", class: "df-btn df-lib", text: "내 서재 논문으로 분야 추천받기",
           onclick: async e => {
             e.currentTarget.disabled = true;
-            const sug = (await suggest(libIds)) || [];
-            const add = sug.filter(c => !cats.includes(c));
-            if (add.length) { cats = parseCats([...add, ...cats].join(" ")); saveCats(); afterChange(); UI.toast(`추가: ${add.join(" · ")}`); }
+            const sug = await suggest(libIds);
+            const r = mergeCats(cats, sug || []); // 빈 자리만큼 뒤에 붙임 (있던 분야는 그대로)
+            if (r.added.length) {
+              cats = r.cats;
+              saveCats();
+              afterChange();
+              UI.toast(`추가: ${r.added.join(" · ")}${r.skipped.length ? ` (${MAX_CATS}개까지라 ${r.skipped.join(" · ")} 못 넣음)` : ""}`);
+            } else if (sug === null) UI.toast("추천을 불러오지 못했습니다");
+            else if (r.skipped.length) UI.toast(`분야는 ${MAX_CATS}개까지 · 추천: ${r.skipped.join(" · ")}`);
             else UI.toast(sug.length ? "이미 모두 들어 있습니다" : "추천할 분야를 찾지 못했습니다");
             draw();
           },
@@ -444,7 +424,7 @@
     });
   }
 
-  // 서재 논문들의 주 카테고리. 요청 실패는 null (다음 방문에 다시)
+  // 서재 논문들의 주 카테고리. 요청 실패(502·네트워크·시간 초과)는 null → 저장하지 않음 (다음 방문에 다시)
   async function suggest(ids, ms = 8000) {
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), ms);
@@ -462,15 +442,6 @@
     qTimer = setTimeout(() => { prefs.q = qInput.value; savePrefs(); applyFilter(); }, 120);
   });
   modeBtn.addEventListener("click", () => { prefs.mode = prefs.mode === "or" ? "and" : "or"; savePrefs(); syncTools(); applyFilter(); });
-  koBtn.addEventListener("click", () => {
-    prefs.ko = !prefs.ko;
-    savePrefs();
-    syncTools();
-    for (const id of cards.keys()) fillCard(id);
-    applyFilter();
-    if (prefs.ko && items.length && !Object.keys(ko).length) loadKo(seq);
-    else if (!prefs.ko) status(null);
-  });
   viewBtn.addEventListener("click", () => {
     prefs.view = prefs.view === "brief" ? "list" : "brief";
     savePrefs();
@@ -488,7 +459,7 @@
     if (libIds.length) {
       status("내 서재로 분야 고르는 중…", "loading");
       const sug = await suggest(libIds, 4000);
-      if (sug) { // 찾은 게 없어도 기본값으로 저장 → 다시 묻지 않음
+      if (sug) { // 빈 추천(서재 논문에 분야 없음)도 기본값으로 저장 → 다시 묻지 않음. 실패(null)는 저장 안 함
         cats = withDefaults(sug);
         saveCats();
         if (!prefs.active) prefs.active = srcKey({ type: "cat", value: cats[0] });
