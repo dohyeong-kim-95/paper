@@ -1,15 +1,17 @@
 """entry-routes: arXiv 주소 그대로 열기(/abs·/pdf·/html), 공유 타깃(/share), HTML 없는 논문의 초록 페이지,
 하이라이트·메모 공유 링크 (POST /api/entry-routes/share → /paper/<id>#s=<공유 id>)"""
+import contextlib
 import json
 import re
 import secrets
 import time
+from typing import Annotated
 from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 import app as core
 
@@ -23,7 +25,12 @@ STRONG_RE = re.compile(
 )
 SHARE_ID_RE = re.compile(r"[A-Za-z0-9_-]{8,32}")
 ABS_TTL = 86400  # 초록 메타데이터 디스크 캐시 1일 (그 사이 HTML이 생기면 훅 자체가 안 불림)
+ABS_MISS_TTL = 6 * 3600  # arXiv에 없는 id도 6시간 기억: 없는 id 반복 요청이 전역 arXiv 스로틀(3초/건)을 잡아먹지 않게
 SHARE_MAX = 300_000  # 공유 하나의 최대 크기 (바이트)
+# 공유 만들기는 계정 없이 디스크에 쓰므로 (논문·Claude 결과 캐시와 같은 폴더) 전체 크기와 빈도를 묶어 둠
+SHARE_DISK_MAX = 100_000_000  # 공유 파일 전체 상한 (바이트). 닿으면 SHARE_KEEP보다 오래된 공유부터 지우고, 그래도 넘으면 507
+SHARE_KEEP = 90 * 86400  # 상한에 닿았을 때만 이보다 오래된 공유를 지움 (평소에는 링크가 계속 열림)
+SHARE_RATE = (30, 600)  # 한 클라이언트(IP)당 600초에 30개까지 (넘으면 429)
 
 
 def find_arxiv_id(*texts: str) -> str | None:
@@ -77,8 +84,14 @@ async def share_target(title: str = "", text: str = "", url: str = ""):
 async def abstract_meta(aid: str) -> dict | None:
     path = core.task_path(aid, "entry-routes.abs")
     hit = core.read_json(path)
-    if isinstance(hit, dict) and time.time() - hit.get("ts", 0) < ABS_TTL:
-        return hit
+    if isinstance(hit, dict):
+        age = time.time() - hit.get("ts", 0)
+        if hit.get("missing"):
+            if age < ABS_MISS_TTL:
+                return None
+            hit = None
+        elif age < ABS_TTL:
+            return hit
 
     async def fetch():
         try:
@@ -88,6 +101,7 @@ async def abstract_meta(aid: str) -> dict | None:
         base = re.sub(r"v\d+$", "", aid)
         entry = next((e for e in entries if e["id"] == base), None)
         if not entry:
+            core.write_json(path, {"missing": True, "ts": int(time.time())})
             return None
         value = {**entry, "ts": int(time.time())}
         core.write_json(path, value)
@@ -144,19 +158,31 @@ async def abstract_page(request: Request, arxiv_id: str):
 
 
 # ---------- 하이라이트·메모 공유 (계정 없음: 무작위 id로 디스크에 저장, 읽기 전용) ----------
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _no_surrogates(v):
+    # JSON의 짝 없는 '\ud83d' (JS가 이모지 중간에서 자른 글) → 빼고 받음: UTF-8로 쓸 수 없어 저장이 500으로 끝남.
+    # 길이 검사 전에 (반쪽만 있던 인용은 빈 글 → 422)
+    return _LONE_SURROGATE.sub("", v) if isinstance(v, str) else v
+
+
+Text = Annotated[str, BeforeValidator(_no_surrogates)]
+
+
 class ShareItem(BaseModel):
-    quote: str = Field(min_length=1, max_length=1000)
-    prefix: str = Field("", max_length=200)
-    suffix: str = Field("", max_length=200)
+    quote: Text = Field(min_length=1, max_length=1000)
+    prefix: Text = Field("", max_length=200)
+    suffix: Text = Field("", max_length=200)
     color: str = Field("", pattern=r"^[a-z]{0,16}$")
-    note: str = Field("", max_length=4000)
-    q: str = Field("", max_length=1000)  # 저장된 Q&A (읽기 전용으로만 보여 줌)
-    a: str = Field("", max_length=8000)
+    note: Text = Field("", max_length=4000)
+    q: Text = Field("", max_length=1000)  # 저장된 Q&A (받는 쪽은 글자 그대로만 보여 줌)
+    a: Text = Field("", max_length=8000)
 
 
 class ShareBody(BaseModel):
     arxiv_id: str = Field(max_length=40)
-    title: str = Field("", max_length=300)
+    title: Text = Field("", max_length=300)
     items: list[ShareItem] = Field(min_length=1, max_length=200)
 
 
@@ -164,18 +190,66 @@ def share_path(sid: str):
     return core.task_path(sid, "entry-routes.share")
 
 
+# 공유 파일 전체 크기: 폴더를 한 번 훑어 기억해 두고 쓸 때마다 더함 (5분마다·폴더가 바뀌면 다시 훑음)
+_disk = {"dir": None, "bytes": 0, "ts": 0.0}
+_hits: dict[str, list[float]] = {}
+
+
+def _share_files():
+    return core.CACHE_DIR.glob("*.entry-routes.share.json")
+
+
+def share_disk_bytes(now: float) -> int:
+    if _disk["dir"] != core.CACHE_DIR or now - _disk["ts"] > 300:
+        total = 0
+        for p in _share_files():
+            with contextlib.suppress(OSError):
+                total += p.stat().st_size
+        _disk.update(dir=core.CACHE_DIR, bytes=total, ts=now)
+    return _disk["bytes"]
+
+
+def prune_shares(now: float) -> None:
+    for p in _share_files():
+        with contextlib.suppress(OSError):
+            if now - p.stat().st_mtime > SHARE_KEEP:
+                p.unlink()
+    _disk["dir"] = None  # 다음 확인 때 다시 훑음
+
+
+def rate_ok(client: str, now: float) -> bool:
+    limit, window = SHARE_RATE
+    if len(_hits) > 10_000:
+        _hits.clear()
+    recent = [t for t in _hits.get(client, []) if now - t < window]
+    if len(recent) >= limit:
+        _hits[client] = recent
+        return False
+    _hits[client] = [*recent, now]
+    return True
+
+
 @router.post("/api/entry-routes/share")
-async def create_share(body: ShareBody):
+async def create_share(body: ShareBody, request: Request):
     aid = core.parse_arxiv_id(body.arxiv_id)
     if not aid or aid != body.arxiv_id:
         raise HTTPException(400, "arXiv ID가 올바르지 않습니다.")
-    rec = {"arxiv_id": aid, "title": body.title, "items": [i.model_dump() for i in body.items], "ts": int(time.time())}
-    if len(json.dumps(rec, ensure_ascii=False).encode()) > SHARE_MAX:
+    now = time.time()
+    rec = {"arxiv_id": aid, "title": body.title, "items": [i.model_dump() for i in body.items], "ts": int(now)}
+    size = len(json.dumps(rec, ensure_ascii=False).encode())
+    if size > SHARE_MAX:
         raise HTTPException(413, "공유할 내용이 너무 많습니다.")
+    if not rate_ok(request.client.host if request.client else "", now):
+        raise HTTPException(429, "공유 링크를 너무 자주 만들었습니다. 잠시 뒤에 다시 해 주세요.")
+    if share_disk_bytes(now) + size > SHARE_DISK_MAX:
+        prune_shares(now)
+        if share_disk_bytes(now) + size > SHARE_DISK_MAX:
+            raise HTTPException(507, "공유 저장 공간이 가득 찼습니다.")
     sid = secrets.token_urlsafe(9)
     while share_path(sid).exists():
         sid = secrets.token_urlsafe(9)
     core.write_json(share_path(sid), rec)
+    _disk["bytes"] += size
     return {"id": sid, "url": f"/paper/{aid}#s={sid}"}
 
 

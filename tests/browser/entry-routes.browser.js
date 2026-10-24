@@ -1,4 +1,4 @@
-// entry-routes 브라우저 확인 (전체 번들): #q= 딥링크 이동·칠하기, 선택 '공유' 링크 왕복(앞 문맥 포함),
+// entry-routes 브라우저 확인 (전체 번들): #q= 딥링크 이동·칠하기·새로고침, 선택 '공유' 링크 왕복(앞 문맥·:~:text=),
 // ⋯ '공유', 하이라이트 공유(#s=) 왕복, 홈 ?err= 알림·북마클릿, /share 리다이렉트
 //   node tests/browser/entry-routes.browser.js <port>
 "use strict";
@@ -79,7 +79,8 @@ test("선택 '공유' → #q= 링크(본문에 두 번 나오면 &p= 앞 문맥)
   assert.equal(shared.text, `“${quote}”`);
   assert.equal(shared.title, await page.title());
   assert.ok(shared.url.startsWith(`${PAPER}#q=matches%20a%20dense%20baseline&p=`), shared.url);
-  assert.ok(shared.url.includes(":~:text=matches%20a%20dense%20baseline"));
+  // 여러 번 나오는 인용: 브라우저 지시자(:~:text=)는 첫 등장으로 가므로 붙이지 않음
+  assert.ok(!shared.url.includes(":~:"), shared.url);
 
   const page2 = await newPage(browser);
   await open(page2, shared.url);
@@ -88,6 +89,44 @@ test("선택 '공유' → #q= 링크(본문에 두 번 나오면 &p= 앞 문맥)
   assert.equal(p.text, quote);
   assert.equal(p.start, r.start, "앞 문맥으로 두 번째 등장을 찾아야 함");
   assert.deepEqual([...page.errors, ...page2.errors], []);
+});
+
+test("선택 '공유'(본문에 한 번뿐인 문장): 브라우저 지시자 :~:text= 도 붙임", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  const quote = "The training loss combines the task loss and a balancing term";
+  await page.evaluate(q => {
+    const idx = PaperAnchor.index(), nm = PaperAnchor.normMap(idx.text);
+    const i = nm.norm.indexOf(q.toLowerCase());
+    PaperApp.selectRange(PaperAnchor.rangeAt(nm.map[i], nm.map[i + q.length - 1] + 1));
+  }, quote);
+  await page.click('#sel-bar button[data-id="entry-routes"]');
+  await until(page, () => window.__shared.length === 1);
+  const url = await page.evaluate(() => window.__shared[0].url);
+  assert.ok(url.startsWith(`${PAPER}#q=The%20training%20loss`) && !url.includes("&p="), url);
+  assert.ok(url.endsWith(":~:text=The%20training%20loss%20combines,and%20a%20balancing%20term"), url);
+  assert.deepEqual(page.errors, []);
+});
+
+test("#q= 링크를 연 뒤 새로고침하면 읽던 자리 그대로 (칠하기만), 새 #q= 해시는 다시 이동", async browser => {
+  const page = await newPage(browser);
+  const q = "The training loss combines the task loss and a balancing term";
+  await open(page, `${PAPER}#q=${encodeURIComponent(q)}`);
+  await until(page, () => CSS.highlights.has("er-quote") && window.scrollY > 0);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(150);
+  await page.reload();
+  await page.waitForFunction(() => window.PaperApp && document.readyState === "complete");
+  await until(page, () => CSS.highlights.has("er-quote"));
+  await page.waitForTimeout(300);
+  assert.equal(await page.evaluate(() => window.scrollY), 0, "새로고침은 공유된 문장으로 끌고 가지 않음");
+  assert.equal(await page.evaluate(() => location.hash.startsWith("#q=")), true); // 해시는 남김 (toc-progress 이어 읽기 알림 생략용)
+  // 같은 페이지에서 다른 #q= 링크를 열면 (hashchange) 그 문장으로
+  await page.evaluate(() => { location.hash = `#q=${encodeURIComponent("Code and checkpoints are released")}`; });
+  await until(page, () => window.scrollY > 0);
+  const p = await painted(page, "er-quote");
+  assert.equal(p.text, "code and checkpoints are released");
+  assert.deepEqual(page.errors, []);
 });
 
 test("⋯ '공유'(하이라이트 없음): 논문 링크만 바로 공유", async browser => {
@@ -135,6 +174,29 @@ test("하이라이트 공유: 고르기 → 링크 만들기 → #s= 링크를 �
   await friend.click(".er-bar-x");
   assert.equal(await friend.evaluate(() => CSS.highlights.has("er-shared") || !!document.querySelector(".er-bar")), false);
   assert.deepEqual([...page.errors, ...friend.errors], []);
+});
+
+test("공유받은 Q&A는 글자 그대로 (보낸 사람의 마크다운·그림 주소를 그리지 않음)", async browser => {
+  const page = await newPage(browser);
+  await open(page);
+  const remote = [];
+  page.on("request", r => { if (r.url().includes("evil.example")) remote.push(r.url()); });
+  const url = await page.evaluate(async () => {
+    const res = await fetch("/api/entry-routes/share", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ arxiv_id: "2401.00001", items: [{ quote: "Code and checkpoints", q: "어디에?",
+        a: "**깃허브** ![x](https://evil.example/x.png) <img src=\"https://evil.example/y.png\"> <b style=\"background:url(https://evil.example/z.png)\">b</b>" }] }) });
+    return (await res.json()).url;
+  });
+  await open(page, `${BASE}${url}`);
+  await until(page, () => document.querySelector(".er-bar"));
+  await page.click(".er-bar button:has-text('목록')");
+  await until(page, () => document.querySelector(".er-item-a"));
+  assert.equal(await page.locator(".er-list img, .er-list .er-item-a b, .er-list [style]").count(), 0);
+  assert.match(await page.textContent(".er-item-a"), /\*\*깃허브\*\* !\[x\]\(https:\/\/evil\.example\/x\.png\)/);
+  assert.match(await page.textContent(".er-item-qa"), /공유한 사람이 저장한 Q&A/);
+  await page.waitForTimeout(200);
+  assert.deepEqual(remote, []);
+  assert.deepEqual(page.errors, []);
 });
 
 test("홈: ?err= 알림을 보여 주고 주소에서 지움, 북마클릿 안내", async browser => {
