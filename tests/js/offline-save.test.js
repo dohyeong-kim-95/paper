@@ -147,6 +147,7 @@ const proxy = u => `http://app.test/api/offline-save/img/2401.00001?u=${encodeUR
 const html = () => new Response("<html>paper</html>", { headers: { "Content-Type": "text/html" } });
 const png = (body = "PNG") => () => new Response(body, { headers: { "Content-Type": "image/png" } });
 const imgs = names => names.map(n => ({ url: img(n), src: img(n) }));
+const doneOf = replies => replies.filter(x => /:done$/.test(x.type));
 
 test("save: 페이지는 PAGES에, 프록시로 받은 그림은 실제 크기 응답으로 SAVED에, 못 받은 그림은 rest → 기본 precache", async () => {
   const t = loadSW();
@@ -155,7 +156,7 @@ test("save: 페이지는 PAGES에, 프록시로 받은 그림은 실제 크기 �
   t.net.set(proxy(img("x3.svg")), () => new Response('{"detail":"x"}', { status: 404, headers: { "Content-Type": "application/json" } }));
   t.net.set(img("x3.svg"), png("SVG-OPAQUE"));
   const msg = { type: "offline-save:save", id: "a1", arxivId: "2401.00001", pages: [PAGE, "https://evil.test/paper/x", "http://app.test/static/app.js"], images: imgs(["x1.png", "x3.svg"]) };
-  const [r] = await t.message(msg);
+  const [r] = doneOf(await t.message(msg));
   assert.deepEqual(r, { type: "offline-save:save:done", id: "a1", pages: 1, images: 1, rest: [img("x3.svg")], quota: false });
   assert.ok(!t.fetched.includes("https://evil.test/paper/x"), "다른 출처·논문 아닌 페이지는 받지 않음");
   const saved = await t.cache("paper-v2-saved");
@@ -190,7 +191,7 @@ test("save: 이미 있는 실제 크기 저장본은 다시 받지 않음, 불�
   Object.defineProperty(opaque2, "__opaque", { value: true });
   await saved.put(img("c.png"), opaque2);
   t.net.set(proxy(img("b.png")), png("UPGRADED"));
-  const [r] = await t.message({ type: "offline-save:save", id: "a2", arxivId: "2401.00001", pages: [], images: imgs(["a.png", "b.png", "c.png"]) });
+  const [r] = doneOf(await t.message({ type: "offline-save:save", id: "a2", arxivId: "2401.00001", pages: [], images: imgs(["a.png", "b.png", "c.png"]) }));
   assert.equal(r.images, 3);
   assert.deepEqual(r.rest, []);
   assert.ok(!t.fetched.includes(proxy(img("a.png"))));
@@ -201,7 +202,7 @@ test("save: 이미 있는 실제 크기 저장본은 다시 받지 않음, 불�
 test("save: 오프라인이면 페이지는 기존 저장본으로 인정, 그림은 rest", async () => {
   const t = loadSW();
   await (await t.cache("paper-v2-pages")).put(PAGE, html());
-  const [r] = await t.message({ type: "offline-save:save", id: "a3", arxivId: "2401.00001", pages: [PAGE], images: imgs(["x1.png"]) });
+  const [r] = doneOf(await t.message({ type: "offline-save:save", id: "a3", arxivId: "2401.00001", pages: [PAGE], images: imgs(["x1.png"]) }));
   assert.equal(r.pages, 1);
   assert.deepEqual(r.rest, [img("x1.png")]);
 });
@@ -211,18 +212,87 @@ test("save: 저장 공간 부족이면 quota 표시하고 나머지는 시도하
   t.net.set(PAGE, html);
   for (const n of ["p1.png", "p2.png", "p3.png", "p4.png", "p5.png", "p6.png"]) t.net.set(proxy(img(n)), png());
   (await t.cache("paper-v2-saved")).full = true;
-  const [r] = await t.message({ type: "offline-save:save", id: "a4", arxivId: "2401.00001", pages: [PAGE], images: imgs(["p1.png", "p2.png", "p3.png", "p4.png", "p5.png", "p6.png"]) });
+  const [r] = doneOf(await t.message({ type: "offline-save:save", id: "a4", arxivId: "2401.00001", pages: [PAGE], images: imgs(["p1.png", "p2.png", "p3.png", "p4.png", "p5.png", "p6.png"]) }));
   assert.equal(r.quota, true);
   assert.equal(r.images, 0);
   assert.equal(r.rest.length, 6);
   assert.ok(t.fetched.filter(u => u.includes("/api/offline-save/img/")).length <= 4, "동시 요청 수(4) 이후로는 프록시를 부르지 않음");
 });
 
+test("save: 바로 start로 답하고(확장 있음 표시) 페이지 뒤·그림마다 진행 상황, 마지막에 done", async () => {
+  const t = loadSW();
+  t.net.set(PAGE, html);
+  t.net.set(proxy(img("x1.png")), png());
+  t.net.set(proxy(img("x2.png")), png());
+  const replies = await t.message({ type: "offline-save:save", id: "p1", arxivId: "2401.00001", pages: [PAGE], images: imgs(["x1.png", "x2.png"]) });
+  assert.deepEqual(replies.map(x => x.type), ["offline-save:save:start", "offline-save:save:progress", "offline-save:save:progress", "offline-save:save:progress", "offline-save:save:done"]);
+  assert.ok(replies.every(x => x.id === "p1"));
+  assert.deepEqual(replies[0], { type: "offline-save:save:start", id: "p1", total: 2 });
+  assert.deepEqual(replies[1], { type: "offline-save:save:progress", id: "p1", pages: 1, images: 0, done: 0, total: 2 });
+  assert.deepEqual(replies[3], { type: "offline-save:save:progress", id: "p1", pages: 1, images: 2, done: 2, total: 2 });
+});
+
+// ---------- 페이지 쪽: trackSave (느린 저장 vs 확장이 없는 SW) ----------
+function bus() {
+  const fns = new Set(), sent = [];
+  return {
+    sent, emit: d => [...fns].forEach(f => f(d)), size: () => fns.size,
+    listen: fn => { fns.add(fn); return () => fns.delete(fn); },
+    post: m => sent.push(m),
+  };
+}
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const MSG = { type: "offline-save:save", id: "j1" };
+
+test("trackSave: start가 없으면(확장 없는 SW) ackMs 뒤 null → 그때만 기본 precache", async () => {
+  const b = bus();
+  const r = await os.trackSave(b.listen, b.post, MSG, { ackMs: 20, idleMs: 1000, maxMs: 2000 });
+  assert.equal(r, null);
+  assert.deepEqual(b.sent, [MSG]);
+  assert.equal(b.size(), 0, "리스너 해제");
+});
+
+test("trackSave: start 뒤엔 진행 메시지마다 타이머를 다시 걸어 오래 걸려도 done을 기다림, 다른 id는 무시", async () => {
+  const b = bus(), seen = [];
+  const p = os.trackSave(b.listen, b.post, MSG, { ackMs: 30, idleMs: 60, maxMs: 5000, onProgress: x => seen.push(x.done) });
+  b.emit({ type: "offline-save:save:start", id: "j1", total: 3 });
+  for (let i = 1; i <= 3; i++) { await wait(40); b.emit({ type: "offline-save:save:progress", id: "j1", pages: 1, images: i, done: i, total: 3 }); }
+  b.emit({ type: "offline-save:save:done", id: "other", pages: 0, images: 0, rest: ["x"] });
+  await wait(40);
+  b.emit({ type: "offline-save:save:done", id: "j1", pages: 1, images: 3, rest: [], quota: false });
+  const r = await p;
+  assert.equal(r.images, 3);
+  assert.ok(!r.late);
+  assert.deepEqual(seen, [1, 2, 3]);
+  assert.equal(b.size(), 0);
+});
+
+test("trackSave: start 뒤 소식이 끊기면 마지막 진행 상황 + late (rest 없음 → 불투명 precache로 다시 보내지 않음)", async () => {
+  const b = bus();
+  const p = os.trackSave(b.listen, b.post, MSG, { ackMs: 20, idleMs: 40, maxMs: 5000 });
+  b.emit({ type: "offline-save:save:start", id: "j1", total: 5 });
+  b.emit({ type: "offline-save:save:progress", id: "j1", pages: 1, images: 2, done: 2, total: 5 });
+  const r = await p;
+  assert.deepEqual(r, { pages: 1, images: 2, done: 2, total: 5, rest: [], quota: false, late: true });
+  // 전체 한도(maxMs)도 지킴
+  const b2 = bus();
+  const p2 = os.trackSave(b2.listen, b2.post, MSG, { ackMs: 20, idleMs: 30, maxMs: 80 });
+  b2.emit({ type: "offline-save:save:start", id: "j1", total: 5 });
+  const iv = setInterval(() => b2.emit({ type: "offline-save:save:progress", id: "j1", pages: 1, images: 1, done: 1, total: 5 }), 10);
+  const r2 = await p2;
+  clearInterval(iv);
+  assert.equal(r2.late, true);
+});
+
+test("resultText: late면 '계속 저장 중일 수 있어요'", () => {
+  assert.equal(os.resultText({ page: true, images: 2, total: 5, late: true }), "오프라인 저장 완료 · 그림 2/5개 저장됨 · 나머지 그림은 계속 저장 중일 수 있어요");
+});
+
 test("status: 지금 캐시에 있는 페이지·그림 수", async () => {
   const t = loadSW();
   await (await t.cache("paper-v2-pages")).put(PAGE, html());
   await (await t.cache("paper-v2-saved")).put(img("x1.png"), new Response("P"));
-  const [r] = await t.message({ type: "offline-save:status", id: "s1", pages: [PAGE], images: imgs(["x1.png", "x2.png"]) });
+  const [r] = doneOf(await t.message({ type: "offline-save:status", id: "s1", pages: [PAGE], images: imgs(["x1.png", "x2.png"]) }));
   assert.deepEqual(r, { type: "offline-save:status:done", id: "s1", pages: 1, images: 1 });
   assert.deepEqual(await t.message({ type: "unknown" }), [], "다른 메시지는 무시");
 });

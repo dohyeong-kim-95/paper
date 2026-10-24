@@ -6,6 +6,9 @@
 //   다른 출처 no-cors 응답(불투명)은 크롬이 개당 약 7MB로 계산 → 용량 초과·출처 전체 삭제 위험.
 //   프록시로 못 받은 그림(SVG·큰 그림·실패)은 rest로 돌려줌 → 페이지가 기본 {type: "precache"}로 보냄 (불투명 저장)
 //   → {pages: 저장된 페이지 수, images: SAVED에 있는 그림 수, rest: [url], quota: bool}
+//   그 전에 바로 {type: "offline-save:save:start", id, total} (확장이 있다는 표시),
+//   페이지 저장 뒤·그림마다 {type: "offline-save:save:progress", id, pages, images, done, total}
+//   → 페이지는 느린 저장과 확장이 없는 SW를 구분하고, 진행 중인 그림을 불투명 precache로 다시 보내지 않음
 // - {type: "offline-save:status", id, pages, images} → {pages, images}: 지금 캐시에 있는 수 (지워졌는지 확인용)
 // 라우트: arXiv 그림은 SAVED → IMG(최근 사용 순 60개, LRU) → 네트워크 (기본 처리를 대신함, 아래 image())
 (function () {
@@ -36,33 +39,38 @@
     }
   }
 
-  async function saveImages(arxivId, images, out) {
+  async function saveImages(arxivId, images, out, tick) {
     const cache = await caches.open(S.SAVED);
-    await pool(images.filter(x => x && x.url), async ({ url, src }) => {
-      const hit = await cache.match(url);
-      if (hit && hit.type !== "opaque") { out.images++; return; }
-      if (!out.quota) {
-        try {
-          const res = await fetch(new URL(`${PROXY}${encodeURIComponent(arxivId)}?u=${encodeURIComponent(src || url)}`, location.origin).href);
-          const type = res.headers.get("Content-Type") || "";
-          if (res.ok && type.startsWith("image/")) {
-            // 새 Response로 감싸 저장: 실제 크기로 계산되고, <img>(no-cors) 요청에 그대로 돌려줄 수 있음
-            await cache.put(url, new Response(await res.blob(), { headers: { "Content-Type": type } }));
-            out.images++;
-            return;
-          }
-        } catch (e) { if (isQuota(e)) out.quota = true; }
-      }
-      if (hit) out.images++; // 불투명 저장본은 그대로 둠
-      else out.rest.push(url);
-    });
+    await pool(images, async x => { await saveImage(cache, arxivId, x, out); out.done++; tick(); });
+  }
+  async function saveImage(cache, arxivId, { url, src }, out) {
+    const hit = await cache.match(url);
+    if (hit && hit.type !== "opaque") { out.images++; return; }
+    if (!out.quota) {
+      try {
+        const res = await fetch(new URL(`${PROXY}${encodeURIComponent(arxivId)}?u=${encodeURIComponent(src || url)}`, location.origin).href);
+        const type = res.headers.get("Content-Type") || "";
+        if (res.ok && type.startsWith("image/")) {
+          // 새 Response로 감싸 저장: 실제 크기로 계산되고, <img>(no-cors) 요청에 그대로 돌려줄 수 있음
+          await cache.put(url, new Response(await res.blob(), { headers: { "Content-Type": type } }));
+          out.images++;
+          return;
+        }
+      } catch (e) { if (isQuota(e)) out.quota = true; }
+    }
+    if (hit) out.images++; // 불투명 저장본은 그대로 둠
+    else out.rest.push(url);
   }
 
-  async function save(m) {
-    const out = { pages: 0, images: 0, rest: [], quota: false };
+  async function save(m, post) {
+    const images = list(m.images).filter(x => x && x.url);
+    const out = { pages: 0, images: 0, done: 0, rest: [], quota: false };
+    const tick = () => post({ type: "offline-save:save:progress", id: m.id, pages: out.pages, images: out.images, done: out.done, total: images.length });
+    post({ type: "offline-save:save:start", id: m.id, total: images.length });
     await savePages(list(m.pages), out);
-    await saveImages(String(m.arxivId || ""), list(m.images), out);
-    return out;
+    tick();
+    await saveImages(String(m.arxivId || ""), images, out, tick);
+    return { pages: out.pages, images: out.images, rest: out.rest, quota: out.quota };
   }
 
   async function status(m) {
@@ -108,10 +116,11 @@
 
   S.onMessage.push(e => {
     const m = e.data || {};
-    const job = m.type === "offline-save:save" ? save(m) : m.type === "offline-save:status" ? status(m) : null;
+    const post = msg => { try { if (e.source) e.source.postMessage(msg); } catch (err) { /* 페이지가 닫힘 */ } };
+    const job = m.type === "offline-save:save" ? save(m, post) : m.type === "offline-save:status" ? status(m) : null;
     if (!job) return;
     e.waitUntil(job.catch(() => ({ error: true })).then(r => {
-      if (e.source) e.source.postMessage({ type: `${m.type}:done`, id: m.id, ...r });
+      post({ type: `${m.type}:done`, id: m.id, ...r });
     }));
   });
 })();

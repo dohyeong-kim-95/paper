@@ -38,11 +38,12 @@
   const fmtDate = ts => { const d = new Date(ts); return Number.isNaN(d.getTime()) ? "" : `${d.getMonth() + 1}월 ${d.getDate()}일`; };
 
   // 저장 결과 → 토스트 문구
-  function resultText({ page, images = 0, total = 0, quota = false, offline = false } = {}) {
+  function resultText({ page, images = 0, total = 0, quota = false, offline = false, late = false } = {}) {
     if (!page) return quota ? "저장 공간이 부족해 저장하지 못했습니다" : "페이지를 저장하지 못했습니다 · 연결을 확인해 주세요";
     let s = "오프라인 저장 완료";
     if (total) s += ` · 그림 ${images >= total ? total : `${images}/${total}`}개 저장됨`;
     if (quota) s += " · 저장 공간 부족";
+    else if (late && images < total) s += " · 나머지 그림은 계속 저장 중일 수 있어요";
     else if (images < total) s += offline ? " · 연결되면 다시 저장하세요" : " · 일부 그림 실패";
     return s;
   }
@@ -54,7 +55,30 @@
   // SW 답 메시지인지: id가 없는 기본 답({type: "precached", n})도 받음
   const isReply = (d, type, id) => !!d && d.type === type && (id == null || d.id === id);
 
-  const api = { imageList, assetUrls, fmtBytes, fmtDate, resultText, bannerText, isReply };
+  // SW 확장의 저장 작업을 따라감: listen(fn) → 해제 함수, post(msg)로 보냄.
+  // ackMs 안에 start가 없으면 확장이 없는 SW → null (그때만 페이지가 그림 전부를 기본 precache로).
+  // start를 받은 뒤엔 done을 기다림: 진행 메시지마다 idleMs 타이머를 다시 걸고, 전체는 maxMs(SW 이벤트 한도)까지.
+  // 그 전에 끊기면 마지막 진행 상황 + late: true (SW가 아직 받는 중일 수 있으니 불투명 precache로 다시 보내지 않음)
+  function trackSave(listen, post, msg, { ackMs = 5000, idleMs = 120000, maxMs = 330000, onProgress } = {}) {
+    return new Promise(resolve => {
+      let last = null, timer = null, hard = null, off = () => {};
+      const done = v => { clearTimeout(timer); clearTimeout(hard); off(); resolve(v); };
+      const arm = ms => { clearTimeout(timer); timer = setTimeout(() => done(last && { ...last, late: true }), ms); };
+      off = listen(d => {
+        if (!d || d.id !== msg.id) return;
+        if (d.type === "offline-save:save:done") return done(d);
+        if (d.type !== "offline-save:save:start" && d.type !== "offline-save:save:progress") return;
+        if (!last) hard = setTimeout(() => done({ ...last, late: true }), maxMs);
+        last = { pages: d.pages || 0, images: d.images || 0, done: d.done || 0, total: d.total || 0, rest: [], quota: false };
+        if (d.type === "offline-save:save:progress" && onProgress) onProgress(last);
+        arm(idleMs);
+      });
+      arm(ackMs);
+      try { post(msg); } catch { done(null); }
+    });
+  }
+
+  const api = { imageList, assetUrls, fmtBytes, fmtDate, resultText, bannerText, isReply, trackSave };
   if (typeof module !== "undefined") module.exports = api;
   if (typeof document === "undefined") return;
   if (document.body.dataset.page !== "paper") return;
@@ -66,18 +90,19 @@
   const record = () => PaperStore.paper(NS, null); // {ts, n}
   const pageUrl = () => location.href.split("#")[0];
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const UNDO_MS = 6000; // 되돌리기 토스트(5초)보다 조금 길게
+  // 그림 저장본을 지우기까지 기다리는 시간: 되돌리기 토스트가 다른 토스트 뒤에 밀려 늦게 떠도 되돌릴 수 있게 넉넉히 (pagehide면 바로)
+  const UNDO_MS = 30000;
   let busy = false, seq = 0;
 
   const btn = UI.addBarButton({ id: NS, label: "오프라인 저장", onClick: () => (busy ? UI.toast("저장 중입니다…") : record() ? manage() : save()) });
   const syncLabel = () => btn.setLabel(busy ? "오프라인 저장 중…" : record() ? "오프라인 저장됨" : "오프라인 저장");
   syncLabel();
 
-  // 메시지를 받을 SW: 제어 중인 것, 아니면 (첫 방문 직후) 활성화된 것
-  async function worker() {
+  // 메시지를 받을 SW: 제어 중인 것, 아니면 (첫 방문 직후) 활성화된 것. 설치 중(첫 방문)이면 ms까지 기다림
+  async function worker(ms = 3000) {
     if (!sw) return null;
     if (sw.controller) return sw.controller;
-    try { const reg = await Promise.race([sw.ready, sleep(3000)]); return (reg && reg.active) || null; } catch { return null; }
+    try { const reg = await Promise.race([sw.ready, sleep(ms)]); return (reg && reg.active) || null; } catch { return null; }
   }
   // SW에 보내고 답을 기다림 (시간 넘으면 null)
   function request(target, msg, replyType, ms) {
@@ -107,27 +132,42 @@
 
   async function save() {
     if (busy) return;
+    if (!sw) { UI.toast("이 브라우저에서는 오프라인 저장을 쓸 수 없습니다"); return; }
     busy = true; // SW를 기다리는 동안 두 번 눌러도 한 번만
-    const target = await worker();
-    if (!target) { busy = false; UI.toast("이 브라우저에서는 오프라인 저장을 쓸 수 없습니다"); return; }
-    pendingUnsave = null; // 해제 대기 중이던 그림은 지우지 않음
     syncLabel();
     UI.status(NS, "오프라인 저장", "loading");
+    const target = await worker(20000); // 첫 방문엔 SW 설치(셸 파일 받기)가 아직 끝나지 않았을 수 있음
+    if (!target) {
+      busy = false;
+      syncLabel();
+      UI.status(NS, "오프라인 저장", null);
+      UI.toast("오프라인 저장을 준비하는 중입니다 · 잠시 후 다시 시도해 주세요");
+      return;
+    }
+    cancelUnsave(); // 해제 대기 중이던 그림은 지우지 않음
     try { navigator.storage && navigator.storage.persist && navigator.storage.persist().catch(() => {}); } catch { /* 무시 */ }
-    let page = false, n = 0, quota = false;
+    let page = false, n = 0, quota = false, late = false;
     const imgs = images();
     try {
-      // 1) 페이지 HTML + 그림(같은 출처 프록시, 실제 크기)
+      // 1) 페이지 HTML + 그림(같은 출처 프록시, 실제 크기). 확장이 바로 start로 답하고 진행 상황을 보냄
       const msg = { type: "offline-save:save", id: `os${Date.now()}-${++seq}`, arxivId: PaperApp.arxivId, pages: [pageUrl()], images: imgs };
-      const r = await request(target, msg, "offline-save:save:done", 90000);
-      const ext = r && !r.error;
-      const rest = ext ? r.rest || [] : imgs.map(x => x.url);
+      const r = await trackSave(fn => {
+        const on = e => fn(e.data);
+        sw.addEventListener("message", on);
+        return () => sw.removeEventListener("message", on);
+      }, m => { sw.startMessages && sw.startMessages(); target.postMessage(m); }, msg, {
+        onProgress: p => UI.status(NS, `오프라인 저장 · 그림 ${p.done}/${p.total}`, "loading"),
+      });
+      const ext = !!r && !r.error;
+      late = !!(r && r.late);
+      // 확장이 없는 옛 SW(start 없음)일 때만 그림 전부를 기본 precache로. 확장이 받는 중이면 다시 보내지 않음
+      const rest = ext ? (late ? [] : r.rest || []) : imgs.map(x => x.url);
       n = ext ? r.images || 0 : 0;
       quota = !!(ext && r.quota);
       page = ext ? r.pages > 0 : await cachedAnywhere(pageUrl()); // 확장이 없는 옛 SW: 둘러보며 저장된 페이지가 있는지
       // 2) 프록시로 못 받은 그림은 기본 precache (불투명 응답, 없으면 둘러보며 받은 것 복사)
       if (rest.length && !quota) {
-        const p = await request(target, { type: "precache", urls: rest }, "precached", 90000);
+        const p = await request(target, { type: "precache", urls: rest }, "precached", Math.min(280000, 30000 + rest.length * 10000));
         n += (p && p.n) || 0;
       }
       // 3) 다른 기능이 받아 둔 GET(요약·용어 …)과 정적 파일: 사용자가 안 연 기능은 새로 생성하지 않음
@@ -140,28 +180,37 @@
     if (page) PaperStore.setPaper(NS, { ts: Date.now(), n });
     syncLabel();
     UI.status(NS, "오프라인 저장", page ? "ready" : "error", { onRetry: save });
-    UI.toast(resultText({ page, images: n, total: imgs.length, quota, offline: !navigator.onLine }));
+    UI.toast(resultText({ page, images: n, total: imgs.length, quota, late, offline: !navigator.onLine }));
     renderBanner();
   }
 
   // 저장 해제: 기록은 바로 지우고, 그림 저장본은 '실행 취소' 시간이 지난 뒤 지움 (오프라인에서도 되돌릴 수 있게)
-  let pendingUnsave = null;
+  // 대기 중인 해제는 하나뿐: {urls, flushed}. 타이머도 하나 (unsave·save마다 지움)
+  let pendingUnsave = null, unsaveTimer = null;
+  function cancelUnsave() { clearTimeout(unsaveTimer); pendingUnsave = null; }
   function flushUnsave() {
-    const urls = pendingUnsave;
-    pendingUnsave = null;
-    if (!urls || record() || !sw || !sw.controller) return; // 그사이 다시 저장했으면 그대로 둠
-    try { sw.controller.postMessage({ type: "unsave", urls }); } catch { /* 무시 */ }
+    const job = pendingUnsave;
+    cancelUnsave();
+    if (!job || record() || !sw || !sw.controller) return; // 그사이 다시 저장했으면 그대로 둠
+    try { sw.controller.postMessage({ type: "unsave", urls: job.urls }); job.flushed = true; } catch { /* 무시 */ }
   }
   function unsave() {
     const rec = record();
+    cancelUnsave();
     PaperStore.delPaper(NS);
     syncLabel();
     renderBanner();
-    pendingUnsave = images().map(x => x.url);
-    const timer = setTimeout(flushUnsave, UNDO_MS);
+    const job = pendingUnsave = { urls: images().map(x => x.url), flushed: false };
+    unsaveTimer = setTimeout(flushUnsave, UNDO_MS);
     UI.toast("오프라인 저장을 해제했습니다", {
       actionLabel: "실행 취소",
-      onAction: () => { clearTimeout(timer); pendingUnsave = null; if (rec) PaperStore.setPaper(NS, rec); syncLabel(); renderBanner(); },
+      onAction: () => {
+        if (pendingUnsave === job) cancelUnsave();
+        if (job.flushed) { if (!record()) save(); return; } // 그림 저장본은 이미 지움 → 기록만 되살리지 않고 다시 저장
+        if (rec && !record()) PaperStore.setPaper(NS, rec);
+        syncLabel();
+        renderBanner();
+      },
     });
   }
   window.addEventListener("pagehide", flushUnsave);
