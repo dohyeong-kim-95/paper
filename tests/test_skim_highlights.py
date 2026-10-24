@@ -5,7 +5,7 @@ import time
 from features import skim_highlights as skim
 from tests.helpers import AsyncCoreTestCase, CoreTestCase, api_error, core
 
-L = lambda **kw: json.dumps(kw) + "\n"  # noqa: E731 - 모델이 쓰는 JSONL 한 줄
+L = lambda **kw: json.dumps(kw) + "\n"  # 모델이 쓰는 JSONL 한 줄
 GOAL = "We propose a sparse mixture of experts model that routes each token to two experts"
 RESULT = "the sparse model improves accuracy by 2.3 points on MMLU"
 LIMIT = "A limitation of our approach is the extra memory required to store all experts"
@@ -18,8 +18,6 @@ def lines(text: str) -> list[dict]:
 class SkimHighlightsTests(CoreTestCase):
     def setUp(self):
         super().setUp()
-        skim._bad.clear()
-        self.addCleanup(skim._bad.clear)
         self.url = f"/api/skim-highlights/{self.paper_id}"
         self.path = core.task_path(self.paper_id, skim.NAME)
 
@@ -72,16 +70,29 @@ class SkimHighlightsTests(CoreTestCase):
         self.assertRegex(r.text, skim.ERROR_TAIL)
         self.assertEqual(lines(r.text), [])
         self.assertFalse(self.path.exists())
-        self.assertEqual(self.client.get(self.url).status_code, 502)  # 기억된 실패: 새 호출 없음
+        # core의 실패 기억 하나만 씀 (reset_core_state가 지움): cached_stream이 502, 새 호출 없음
+        self.assertEqual(core._failures[(self.paper_id, skim.NAME)][1], 502)
+        r = self.client.get(self.url)
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("형식 오류", r.json()["detail"])
         self.assertEqual(len(self.claude.calls), 1)
         self.claude.push(L(f="goal", q=GOAL, s=3))
         r = self.client.get(self.url + "?retry=1")
         self.assertEqual(lines(r.text), [{"f": "goal", "q": GOAL, "s": 3}])
         self.assertEqual(len(self.claude.calls), 2)
         self.assertTrue(self.path.exists())
+        self.assertNotIn((self.paper_id, skim.NAME), core._failures)  # 성공하면 실패 기억도 지움
 
-    def test_bad_memory_expires(self):
-        skim._bad[self.paper_id] = time.time() - core.FAIL_TTL - 1
+    def test_cached_invalid_output_is_dropped_and_remembered(self):
+        core.write_json(self.path, "no json here")  # 형식 검사 전에 저장된 원문
+        r = self.client.get(self.url)
+        self.assertRegex(r.text, skim.ERROR_TAIL)
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.client.get(self.url).status_code, 502)
+        self.assertEqual(self.claude.calls, [])
+
+    def test_failure_memory_expires(self):
+        core._failures[(self.paper_id, skim.NAME)] = (time.time() - core.FAIL_TTL - 1, 502, "형식 오류")
         self.claude.push(L(f="goal", q=GOAL, s=3))
         self.assertEqual(self.client.get(self.url).status_code, 200)
 
@@ -122,10 +133,6 @@ class SkimHighlightsTests(CoreTestCase):
 
 
 class SkimProgressTests(AsyncCoreTestCase):
-    def setUp(self):
-        super().setUp()
-        skim._bad.clear()
-
     async def test_lines_arrive_before_generation_ends(self):
         # 줄이 오는 대로 내보냄 → 클라이언트가 문장마다 바로 칠함 (전체 생성을 기다리지 않음)
         self.claude.push({"chunks": [L(f="goal", q=GOAL, s=3), L(f="result", q=RESULT, s=2)], "delay": 0.05})

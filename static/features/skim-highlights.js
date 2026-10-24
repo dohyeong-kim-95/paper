@@ -130,9 +130,26 @@
     return best;
   }
 
+  // 인용이 들어갈 본문 자리. 모델은 논문 순서로 쓰므로 from(앞 항목 자리)부터 먼저 찾고, 없으면 처음부터
+  // (초록 문장이 서론·결론에 그대로 되풀이돼도 제자리에). 이미 칠한 자리(taken [{start, end}])와 겹치면 다음 등장 위치로.
+  // locateFrom(q, from) → {start, end} | null. 반환: {start, end} | "dup"(본문에 있지만 모두 이미 칠한 자리) | null(못 찾음)
+  function findSpot(locateFrom, q, from, taken) {
+    let found = false;
+    for (const lo of from > 0 ? [from, 0] : [0]) {
+      for (let at = lo, n = 0; n < 50; n++) {
+        const o = locateFrom(q, at);
+        if (!o) break;
+        found = true;
+        if (!(taken || []).some(x => x.start < o.end && o.start < x.end)) return o;
+        at = o.start + 1;
+      }
+    }
+    return found ? "dup" : null;
+  }
+
   const api = {
     FACETS, MAX_ITEMS, EXPLAIN, cleanItem, parseLine, makeParser, filterByDensity, countByFacet, groupBySection,
-    normSettings, densityLabel, nextAfter,
+    normSettings, densityLabel, nextAfter, findSpot,
   };
   if (typeof module !== "undefined") module.exports = api;
   if (typeof document === "undefined") return;
@@ -147,17 +164,25 @@
   let settings = normSettings(store.get(KEY, null));
   let items = []; // 도착한 문장 {f, q, s, start, end, one, secId, sec} (start null = 본문에서 못 찾음)
   let state = "idle"; // idle | loading | ready | error
-  let loading = null, painted = {}, paintQueued = false, legend = null, tellWhenReady = false, chip = false;
+  let loading = null, painted = {}, paintQueued = false, legend = null, tellWhenReady = false;
+  let chip = false, slow = false, lastStart = 0, toastH = null;
 
   const save = () => store.set(KEY, settings);
   const located = () => items.filter(it => it.start != null);
   const visible = () => filterByDensity(located(), settings);
   const startEl = r => (r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentElement);
 
-  // 인용 → 본문 위치·섹션. 같은 자리를 두 번 칠하지 않음
+  // 색인 텍스트의 normMap은 텍스트가 같으면 다시 계산하지 않음 (문장마다 locateIn에 넘김)
+  let nmText = null, nmVal = null;
+  const nmFor = text => (nmText === text ? nmVal : (nmText = text, nmVal = A.normMap(text)));
+
+  // 인용 → 본문 위치·섹션 (findSpot: 앞 항목 다음부터, 이미 칠한 자리는 피함). null = 못 찾음, "dup" = 이미 칠한 자리뿐
   function place(it) {
-    const o = A.locate(it.q);
-    if (!o || items.some(x => x.start === o.start)) return { ...it, start: null, end: null };
+    const idx = A.index(), nm = nmFor(idx.text);
+    const o = findSpot((q, from) => A.locateIn(idx.text, q, { from, nm }), it.q, lastStart, located());
+    if (o === "dup") return null;
+    if (!o) return { ...it, start: null, end: null };
+    lastStart = o.start;
     const r = A.rangeAt(o.start, o.end), el = r && startEl(r);
     const sec = el && el.closest("section");
     const title = sec && [...sec.children].find(c => c.classList.contains("ltx_title"));
@@ -189,14 +214,25 @@
     requestAnimationFrame(paintNow);
   }
 
-  const btn = UI.addBarButton({ id: KEY, label: "핵심 문장", onClick: () => setOn(!settings.on) });
+  // 메뉴 '핵심 문장': 꺼져 있으면 켬(칠하고 '목록' 토스트), 켜져 있으면 목록 peek (끄기 스위치·역할·밀도가 거기에)
+  const btn = UI.addBarButton({ id: KEY, label: "핵심 문장", onClick: () => (settings.on ? openLegend() : setOn(true)) });
   btn.setActive(settings.on);
   const updateDot = () => btn.setDot(state === "ready" && !settings.on && located().length > 0);
   const refreshLegend = () => legend && legend();
 
+  // '목록' 버튼이 있는 토스트는 다른 토스트를 뒤에 줄 세우므로, 끄거나 peek를 열 때 직접 닫음
+  const dropToast = () => { if (toastH) toastH.close(); toastH = null; };
   function announce() {
+    dropToast();
     const n = visible().length;
-    UI.toast(n ? `핵심 문장 ${n}개 표시` : "조건에 맞는 핵심 문장이 없습니다", { actionLabel: "목록", onAction: openLegend });
+    toastH = UI.toast(n ? `핵심 문장 ${n}개 표시` : "조건에 맞는 핵심 문장이 없습니다", { actionLabel: "목록", onAction: openLegend });
+  }
+
+  // 상태 칩은 형광펜을 켠 사용자에게만 (꺼 둔 채 유휴 시간에 미리 받는 건 조용히: 느려도·실패해도 띠에 띄우지 않음)
+  function syncStatus() {
+    if (settings.on && state === "loading" && slow) { chip = true; UI.status(KEY, "핵심 문장", "loading"); }
+    else if (settings.on && state === "error") { chip = true; UI.status(KEY, "핵심 문장", "error", { onRetry: () => ensureLoad(true) }); }
+    else if (chip && state !== "ready") { chip = false; UI.status(KEY, "핵심 문장", null); }
   }
 
   function setOn(on, { quiet = false } = {}) {
@@ -206,17 +242,27 @@
     updateDot();
     paintNow();
     refreshLegend();
-    if (!settings.on) { if (!quiet) UI.toast("핵심 문장 표시를 껐습니다"); return; }
+    if (!settings.on) { // 끄기는 목록 peek의 스위치에서 (스위치가 상태를 보여 주므로 토스트 없음)
+      tellWhenReady = false;
+      syncStatus();
+      dropToast();
+      return;
+    }
     if (state === "ready") { if (!quiet) announce(); return; }
-    // 아직 없으면 바로 받기 시작 (사용자 동작이므로 idle을 기다리지 않음), 도착하는 대로 칠함
+    // 아직 없으면 바로 받기 시작 (사용자 동작이므로 idle을 기다리지 않음, 실패했었으면 다시 생성), 도착하는 대로 칠함
     tellWhenReady = !quiet;
     if (!quiet) UI.toast("핵심 문장을 찾는 중…");
+    syncStatus();
     ensureLoad(state === "error");
   }
 
   function add(list) {
-    if (!list.length) return;
-    for (const it of list) items.push(place(it));
+    let n = 0;
+    for (const it of list) {
+      const p = place(it);
+      if (p) { items.push(p); n++; } // 이미 칠한 자리와 같은 문장은 버림 (못 찾은 문장으로 세지 않음)
+    }
+    if (!n) return;
     if (settings.on) schedulePaint();
     refreshLegend();
   }
@@ -229,10 +275,13 @@
   async function load(retry) {
     state = "loading";
     items = [];
+    lastStart = 0;
     paintNow(); // 다시 받기: 이전 일부 결과 지움
     refreshLegend();
-    // 캐시 적중(바로 끝남)이면 상태 칩을 띄우지 않음
-    const t = setTimeout(() => { chip = true; UI.status(KEY, "핵심 문장", "loading"); }, 400);
+    // 칩이 떠 있으면('다시') 바로 '…'로, 아니면 400ms 뒤에 (캐시 적중처럼 바로 끝나면 띄우지 않음)
+    slow = chip;
+    syncStatus();
+    const t = setTimeout(() => { slow = true; syncStatus(); }, 400);
     let error = null;
     try {
       const res = await fetch(retry ? `${url}?retry=1` : url);
@@ -252,8 +301,7 @@
     clearTimeout(t);
     state = error ? "error" : "ready";
     if (error) {
-      chip = true;
-      UI.status(KEY, "핵심 문장", "error", { onRetry: () => ensureLoad(true) });
+      syncStatus(); // 꺼 둔 채 미리 받다 실패하면 조용히: 켤 때·목록의 '다시'가 다시 시도
       if (tellWhenReady) UI.toast("핵심 문장을 불러오지 못했습니다");
     } else {
       PaperApp.addOfflineUrl(url);
@@ -328,6 +376,7 @@
   const jumpTo = (it, opts) => PaperNav.jumpTo({ start: it.start, end: it.end }, opts);
 
   function openSentence(it) {
+    dropToast();
     const actions = [
       { label: "설명", primary: true, onClick: ({ close }) => { close(); explain(it); } },
       { label: "번역", onClick: ({ close }) => { close(); translate(it); } },
@@ -352,6 +401,7 @@
 
   // ---------- 목록 peek: 표시 켜기/끄기, 역할 칩(개수·토글), 밀도 슬라이더, 섹션별 핵심 문장 목록 ----------
   function openLegend() {
+    dropToast();
     if (legend) return;
     const sw = h("button", { type: "button", class: "sk-switch", onclick: () => setOn(!settings.on, { quiet: true }) });
     const chips = h("div", { class: "sk-chips", role: "group", "aria-label": "역할별 표시" });
@@ -384,8 +434,8 @@
         : state === "error" ? "불러오지 못했습니다"
           : !vis.length ? "조건에 맞는 문장이 없습니다. 밀도를 높이거나 역할을 켜 보세요."
             : `${vis.length}개 · 누르면 그 위치로 이동${lost ? ` (본문에서 못 찾은 ${lost}개 제외)` : ""}`;
-      note.replaceChildren(h("span", { text: msg }),
-        state === "error" ? h("button", { type: "button", text: "다시", onclick: () => ensureLoad(true) }) : null);
+      note.replaceChildren(h("span", { text: msg }));
+      if (state === "error") note.append(h("button", { type: "button", text: "다시", onclick: () => ensureLoad(true) }));
       list.replaceChildren(...groupBySection(vis).map(g => h("section", { class: "sk-group" },
         h("h4", { text: g.title || "본문" }),
         ...g.items.map(it => h("button", { type: "button", class: "sk-item", dataset: { sk: it.f }, onclick: () => { close(); jumpTo(it); } },

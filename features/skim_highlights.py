@@ -2,13 +2,14 @@
 
 GET /api/skim-highlights/{id} → text/plain JSONL 스트림. 한 줄에 {"f": facet, "q": 본문 인용, "s": 1-3}, 논문 순서.
 생성·캐시는 core.cached_stream (모델이 JSONL로 씀), 내보낼 때 줄 단위로 검증 → 클라이언트가 도착하는 대로 칠함.
-유효한 문장이 하나도 없으면 형식 오류: 저장된 원문을 지우고 '[오류]' 꼬리, FAIL_TTL 동안 502 (retry=1이면 다시 생성)."""
+유효한 문장이 하나도 없으면 형식 오류: 저장된 원문을 지우고 '[오류]' 꼬리, core._failures에 기억 →
+FAIL_TTL 동안 cached_stream이 502 (retry=1이면 다시 생성) — 다른 생성 실패와 같은 기억·같은 규칙."""
 import contextlib
 import json
 import re
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 import app as core
@@ -49,9 +50,6 @@ PROMPT = """이 논문을 휴대폰에서 빠르게 훑어 읽는(skim) 독자�
 
 출력 예 (형식만):
 {"f": "goal", "q": "<본문에서 그대로 복사한 6~20단어>", "s": 3}"""
-
-_bad: dict[str, float] = {}  # arxiv_id -> 형식 오류 시각 (유효한 문장 0개: 매번 다시 생성·과금하지 않게)
-
 
 def clean_item(obj) -> dict | None:
     """모델이 쓴 한 항목 → {"f","q","s"} | None (모르는 역할·빈 인용·3단어 미만은 버림)"""
@@ -123,17 +121,15 @@ async def filtered(arxiv_id: str, chunks):
     if out:
         yield out
     if not seen:
-        core.task_path(arxiv_id, NAME).unlink(missing_ok=True)  # 형식 오류는 캐시에 남기지 않음
-        _bad[arxiv_id] = time.time()
+        # 형식 오류는 캐시에 남기지 않고 실패로 기억 (cached_stream이 FAIL_TTL 동안 502: 매번 다시 생성·과금하지 않게).
+        # _produce가 저장·실패 기억 지우기를 마친 뒤(스트림 끝)라 덮어써지지 않음
+        core.task_path(arxiv_id, NAME).unlink(missing_ok=True)
+        core._failures[(arxiv_id, NAME)] = (time.time(), 502, "핵심 문장 응답 형식 오류 (유효한 문장 없음)")
         yield core.error_tail("핵심 문장을 찾지 못했습니다 (응답 형식 오류)")
 
 
 @router.get("/api/skim-highlights/{arxiv_id}")
 async def skim_highlights(arxiv_id: str, retry: bool = False):
-    if retry:
-        _bad.pop(arxiv_id, None)
-    elif time.time() - _bad.get(arxiv_id, 0) < core.FAIL_TTL:
-        raise HTTPException(502, "핵심 문장 응답 형식 오류 (잠시 뒤 다시 시도)")
     resp = await core.cached_stream(arxiv_id, NAME, PROMPT, MAX_TOKENS, retry=retry)
     return StreamingResponse(filtered(arxiv_id, resp.body_iterator), media_type=core.TEXT,
                              headers={**core.OFFLINE_HEADERS, "Cache-Control": "no-cache"})
